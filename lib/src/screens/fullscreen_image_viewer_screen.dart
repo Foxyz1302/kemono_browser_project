@@ -524,84 +524,81 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
         final ratio = meta?.aspectRatio ?? _aspectRatio ?? 1.0;
         final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
 
-        return SizedBox(
-          width: vw,
-          height: vh,
-          child: Listener(
-            onPointerSignal: (event) {
-              if (event is PointerScrollEvent && _imageInfo != null && _hasLoaded) {
-                setState(() => zoomOnScroll(
-                  event.scrollDelta.dy,
-                  event.localPosition,
-                  Size(vw, vh),
-                  iw, ih,
-                ));
-              }
-            },
-            child: GestureDetector(
-              onScaleStart: zoomOnScaleStart,
-              onScaleUpdate: (details) {
-                if (_imageInfo != null) {
-                  setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
-                }
-              },
-              onDoubleTapDown: (details) {
-                if (_imageInfo != null && _hasLoaded) {
-                  setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
-                }
-              },
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // ---- Background fill ----
-                  Container(color: Colors.black),
+	        return ClipRRect(
+	          borderRadius: BorderRadius.circular(15),
+	          child: SizedBox(
+	            width: vw,
+	            height: vh,
+	            child: Listener(
+	              onPointerSignal: (event) {
+	                if (event is PointerScrollEvent && _imageInfo != null && _hasLoaded) {
+	                  setState(() => zoomOnScroll(
+	                    event.scrollDelta.dy,
+	                    event.localPosition,
+	                    Size(vw, vh),
+	                    iw, ih,
+	                  ));
+	                }
+	              },
+	              child: GestureDetector(
+	                onScaleStart: zoomOnScaleStart,
+	                onScaleUpdate: (details) {
+	                  if (_imageInfo != null) {
+	                    setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
+	                  }
+	                },
+	                onDoubleTapDown: (details) {
+	                  if (_imageInfo != null && _hasLoaded) {
+	                    setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
+	                  }
+	                },
+	                child: Stack(
+	                  fit: StackFit.expand,
+	                  children: [
+	                    // ---- Background fill ----
+	                    Container(color: Colors.black),
 
-                  // ---- Skeleton (behind the image) ----
-                  if (!_fadeCompleted)
-                    Center(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(15),
-                        child: SizedBox(width: iw, height: ih, child: _buildSkeletonContent(iw, ih)),
-                      ),
-                    ),
+	                    // ---- Skeleton (behind the image) ----
+	                    if (!_fadeCompleted)
+	                      Center(
+	                        child: SizedBox(width: iw, height: ih, child: _buildSkeletonContent(iw, ih)),
+	                      ),
 
-                  // ---- Zoomable image (fades in over skeleton) ----
-                  if (_imageInfo != null)
-                    AnimatedOpacity(
-                      opacity: _hasLoaded ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 300),
-                      onEnd: () {
-                        if (_hasLoaded && mounted) {
-                          setState(() => _fadeCompleted = true);
-                        }
-                      },
-                      child: Center(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(15),
-                          child: Transform(
-                            transform: buildZoomTransform(vw, vh, iw, ih),
-                            alignment: Alignment.center,
-                            child: SizedBox(
-                              width: iw,
-                              height: ih,
-                              child: RawImage(
-                                image: _imageInfo!.image,
-                                fit: BoxFit.contain,
-                                isAntiAlias: true,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+	                    // ---- Zoomable image (fades in over skeleton) ----
+	                    if (_imageInfo != null)
+	                      AnimatedOpacity(
+	                        opacity: _hasLoaded ? 1.0 : 0.0,
+	                        duration: const Duration(milliseconds: 300),
+	                        onEnd: () {
+	                          if (_hasLoaded && mounted) {
+	                            setState(() => _fadeCompleted = true);
+	                          }
+	                        },
+	                        child: Center(
+	                          child: Transform(
+	                            transform: buildZoomTransform(vw, vh, iw, ih),
+	                            alignment: Alignment.center,
+	                            child: SizedBox(
+	                              width: iw,
+	                              height: ih,
+	                              child: RawImage(
+	                                image: _imageInfo!.image,
+	                                fit: BoxFit.contain,
+	                                isAntiAlias: true,
+	                              ),
+	                            ),
+	                          ),
+	                        ),
+	                      ),
+              ],
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
-  }
+  },
+);
+}
 
   Widget _buildSkeletonContent(double w, double h) {
     final shortest = math.min(w, h);
@@ -619,7 +616,7 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
           Container(
             width: w,
             height: h,
-            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.03), borderRadius: BorderRadius.circular(15)),
+            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.03)),
           ),
 
         // Dark overlay when using blurred thumbnail for readability.
@@ -754,59 +751,59 @@ class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_Archive
         final ratio = _aspectRatio ?? 1.0;
         final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
 
-        return SizedBox(
-          width: vw,
-          height: vh,
-          child: Listener(
-            onPointerSignal: (event) {
-              if (event is PointerScrollEvent) {
-                setState(() => zoomOnScroll(
-                  event.scrollDelta.dy,
-                  event.localPosition,
-                  Size(vw, vh),
-                  iw, ih,
-                ));
-              }
-            },
-            child: GestureDetector(
-              onScaleStart: zoomOnScaleStart,
-              onScaleUpdate: (details) {
-                setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
-              },
-              onDoubleTapDown: (details) {
-                setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
-              },
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // Black fill behind image.
-                  Container(color: Colors.black),
+	    return ClipRRect(
+	      borderRadius: BorderRadius.circular(15),
+	      child: SizedBox(
+	        width: vw,
+	        height: vh,
+	        child: Listener(
+	          onPointerSignal: (event) {
+	            if (event is PointerScrollEvent) {
+	              setState(() => zoomOnScroll(
+	                event.scrollDelta.dy,
+	                event.localPosition,
+	                Size(vw, vh),
+	                iw, ih,
+	              ));
+	            }
+	          },
+	          child: GestureDetector(
+	            onScaleStart: zoomOnScaleStart,
+	            onScaleUpdate: (details) {
+	              setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
+	            },
+	            onDoubleTapDown: (details) {
+	              setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
+	            },
+	            child: Stack(
+	              fit: StackFit.expand,
+	              children: [
+	                // Black fill behind image.
+	                Container(color: Colors.black),
 
-                  // Zoomable image.
-                  Center(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(15),
-                      child: Transform(
-                        transform: buildZoomTransform(vw, vh, iw, ih),
-                        alignment: Alignment.center,
-                        child: SizedBox(
-                          width: iw,
-                          height: ih,
-                          child: Image.memory(
-                            _data!,
-                            fit: BoxFit.contain,
-                            filterQuality: FilterQuality.high,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+	                // Zoomable image.
+	                Center(
+	                  child: Transform(
+	                    transform: buildZoomTransform(vw, vh, iw, ih),
+	                    alignment: Alignment.center,
+	                    child: SizedBox(
+	                      width: iw,
+	                      height: ih,
+	                      child: Image.memory(
+	                        _data!,
+	                        fit: BoxFit.contain,
+	                        filterQuality: FilterQuality.high,
+	                      ),
+	                    ),
+	                  ),
+	                ),
+		      ],
+		    ),
+		  ),
+		),
+	      ),
+	    );
+	  },
     );
   }
 }
