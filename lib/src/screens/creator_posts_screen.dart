@@ -1,14 +1,19 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart' as cache;
+import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/api/pawchive_client.dart';
 import 'package:kemono_browser_project/src/archive/archive_cache.dart';
 import 'package:kemono_browser_project/src/archive/archive_service.dart';
-import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
+import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
+import 'package:kemono_browser_project/src/widgets/context_menu.dart';
+import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as p;
 import 'package:signals_flutter/signals_flutter.dart';
 
@@ -677,33 +682,83 @@ class ImageWrapTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      clipBehavior: .antiAlias,
-      decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
-      constraints: const BoxConstraints(maxHeight: 250),
-      child: Stack(
-        children: [
-          Image(
-            image: KemonoImageProvider('$_imgBase${f.path}', creatorId: creator.id, postId: post.id),
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => Container(
-              width: 120,
-              height: 120,
-              color: Colors.grey.shade800,
-              child: const Icon(Icons.image_not_supported, color: Colors.white38),
-            ),
-          ),
-          Positioned.fill(
-            child: Material(
-              type: .transparency,
-              child: InkWell(
-                onTap: isUnavailable
-                    ? null
-                    : () => FullscreenImageViewerScreen.open(context, files: allFiles, index: idx, creatorId: creator.id, postId: post.id),
+    final fullUrl = 'https://file.pawchive.pw/data${f.path}?f=${f.name ?? p.basename(f.path)}';
+
+    return FContextMenu(
+      entries: [
+        ContextMenuAction(
+          label: 'Copy image',
+          icon: Icons.image,
+          onTap: () async {
+            try {
+              final info = await ImageCacheService.instance
+                  .getCachedFileStream(fullUrl)
+                  .where((r) => r is cache.FileInfo)
+                  .cast<cache.FileInfo>()
+                  .first;
+              final bytes = await info.file.readAsBytes();
+              await Pasteboard.writeImage(bytes);
+            } catch (e, st) {
+              debugPrint('Copy image failed: $e\n$st');
+            }
+          },
+        ),
+        ContextMenuAction(
+          label: 'Copy file',
+          icon: Icons.insert_drive_file,
+          onTap: () async {
+            try {
+              final info = await ImageCacheService.instance
+                  .getCachedFileStream(fullUrl)
+                  .where((r) => r is cache.FileInfo)
+                  .cast<cache.FileInfo>()
+                  .first;
+              await Pasteboard.writeFiles([info.file.path]);
+            } catch (e, st) {
+              debugPrint('Copy file failed: $e\n$st');
+            }
+          },
+        ),
+        ContextMenuAction(
+          label: 'Copy image URL',
+          icon: Icons.link,
+          onTap: () => Clipboard.setData(ClipboardData(text: fullUrl)),
+        ),
+      ],
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
+        constraints: const BoxConstraints(maxHeight: 250),
+        child: Stack(
+          children: [
+            Image(
+              image: KemonoImageProvider('$_imgBase${f.path}', creatorId: creator.id, postId: post.id),
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => Container(
+                width: 120,
+                height: 120,
+                color: Colors.grey.shade800,
+                child: const Icon(Icons.image_not_supported, color: Colors.white38),
               ),
             ),
-          ),
-        ],
+            Positioned.fill(
+              child: Material(
+                type: MaterialType.transparency,
+                child: InkWell(
+                  onTap: isUnavailable
+                      ? null
+                      : () => FullscreenImageViewerScreen.open(
+                          context,
+                          files: allFiles,
+                          index: idx,
+                          creatorId: creator.id,
+                          postId: post.id,
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,11 +1,13 @@
 import 'dart:math';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide SearchBar;
 import 'package:flutter/rendering.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
+import 'package:kemono_browser_project/src/widgets/search_bar.dart';
+import 'package:persistent_header_adaptive/persistent_header_adaptive.dart';
 import 'package:signals_flutter/signals_flutter.dart';
 
 import '../state/app_state.dart';
@@ -55,93 +57,133 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Kemono'),
-        actions: [IconButton(icon: const Icon(Icons.logout), onPressed: () => AuthState.instance.logout())],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    decoration: InputDecoration(
-                      hintText: 'Search creators...',
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    ),
-                    onChanged: (v) => _app.searchQuery.value = v,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                SignalBuilder(
-                  builder: (context) {
-                    return DropdownButton<SortBy>(
-                      value: _app.sortBy.value,
-                      items: SortBy.values
-                          .map(
-                            (s) => DropdownMenuItem(
-                              value: s,
-                              child: Text(s.label, style: const TextStyle(fontSize: 13)),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (v) {
-                        if (v != null) _app.sortBy.value = v;
-                      },
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: SignalBuilder(
-              builder: (context) {
-                if (_app.creatorsLoading.value && _app.creators.value.isEmpty) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (_app.creatorsError.value != null && _app.creators.value.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('Error: ${_app.creatorsError.value}'),
-                        const SizedBox(height: 12),
-                        FilledButton(onPressed: () => _app.loadCreators(refresh: true), child: const Text('Retry')),
-                      ],
-                    ),
-                  );
-                }
-                final creators = _app.filteredCreators;
-                return creators.isEmpty
-                    ? const Center(child: Text('No creators found'))
-                    : CustomScrollView(
-                        slivers: [
-                          SliverPadding(
-                            // Add your side padding here
-                            padding: .all(4),
-                            sliver: SliverGrid.builder(
-                              gridDelegate: const FixedHeightGridDelegate(
-                                maxCrossAxisExtent: 360,
-                                height: 120.0, // <-- Strict, consistent tile pixel height
-                                mainAxisSpacing: 4,
-                                crossAxisSpacing: 4,
+      body: SignalBuilder(
+        builder: (context) {
+          if (_app.creatorsLoading.value && _app.creators.value.isEmpty) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (_app.creatorsError.value != null && _app.creators.value.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Error: ${_app.creatorsError.value}'),
+                  const SizedBox(height: 12),
+                  FilledButton(onPressed: () => _app.loadCreators(refresh: true), child: const Text('Retry')),
+                ],
+              ),
+            );
+          }
+          final creators = _app.filteredCreators;
+          return CustomScrollView(
+            slivers: [
+              AdaptiveHeightSliverPersistentHeader(
+                floating: true,
+                pinned: true,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 900),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                      child: Row(
+                        children: [
+                          Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(15),
+                            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              child: Text(
+                                'Kemono',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                               ),
-                              itemCount: creators.length,
-                              itemBuilder: (context, i) => CreatorTile(creators[i]),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Material(
+                              elevation: 4,
+                              borderRadius: BorderRadius.circular(15),
+                              color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    SignalBuilder(
+                                      builder: (context) {
+                                        final asc = _app.sortAscending.value;
+                                        return IconButton(
+                                          icon: Icon(asc ? Icons.arrow_upward : Icons.arrow_downward, size: 20),
+                                          tooltip: asc ? 'Ascending' : 'Descending',
+                                          onPressed: () => _app.sortAscending.value = !asc,
+                                          visualDensity: VisualDensity.compact,
+                                          style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+                                        );
+                                      },
+                                    ),
+                                    SignalBuilder(
+                                      builder: (context) {
+                                        return DropdownButton<SortBy>(
+                                          value: _app.sortBy.value,
+                                          underline: const SizedBox.shrink(),
+                                          icon: const Icon(Icons.arrow_drop_down, size: 20),
+                                          style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+                                          items: SortBy.values.map((s) => DropdownMenuItem(value: s, child: Text(s.label))).toList(),
+                                          onChanged: (v) {
+                                            if (v != null) _app.sortBy.value = v;
+                                          },
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(15),
+                            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+                            child: Padding(
+                              padding: const EdgeInsets.only(left: 2),
+                              child: IconButton(
+                                icon: const Icon(Icons.logout),
+                                tooltip: 'Logout',
+                                onPressed: () => AuthState.instance.logout(),
+                              ),
                             ),
                           ),
                         ],
-                      );
-              },
-            ),
-          ),
-        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              if (creators.isEmpty)
+                const SliverFillRemaining(child: Center(child: Text('No creators found')))
+              else
+                SliverPadding(
+                  padding: .all(4),
+                  sliver: SliverGrid.builder(
+                    gridDelegate: const FixedHeightGridDelegate(
+                      maxCrossAxisExtent: 360,
+                      height: 120.0,
+                      mainAxisSpacing: 4,
+                      crossAxisSpacing: 4,
+                    ),
+                    itemCount: creators.length,
+                    itemBuilder: (context, i) => CreatorTile(creators[i]),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
