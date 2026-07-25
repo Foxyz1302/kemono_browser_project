@@ -44,8 +44,6 @@ dependencies:
   cookie_jar: ^4.0.0
   hive_ce: ^2.19.3
   hive_ce_flutter: ^2.3.4
-  custom_interactive_viewer: ^0.0.10
-  extended_image: ^10.1.0
 
 dev_dependencies:
   flutter_test:

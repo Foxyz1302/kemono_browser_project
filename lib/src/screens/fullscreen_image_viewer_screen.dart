@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
+import 'dart:ui' show ImageFilter, instantiateImageCodec;
 
-import 'package:custom_interactive_viewer/custom_interactive_viewer.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
@@ -17,8 +17,9 @@ import 'package:signals_flutter/signals_flutter.dart';
 // FullscreenImageViewerScreen — entry points
 // =============================================================================
 
-/// Fullscreen image viewer with per-page [InteractiveViewer] and
-/// PageView–InteractiveViewer gesture conflict resolution.
+/// Fullscreen image viewer with per-page custom zoom/pan via
+/// [Listener] (mouse wheel) + [GestureDetector] (drag/pinch) +
+/// [Transform] (visual zoom) + [ClipRRect] (image-only rounded corners).
 ///
 /// Both [open] and [openArchive] delegate to [FullscreenPageViewInner] so
 /// they share the same dark-overlay chrome (nav arrows, keyboard nav,
@@ -33,13 +34,10 @@ class FullscreenImageViewerScreen extends StatelessWidget {
   /// Compute the display size for `BoxFit.contain` given container dimensions
   /// and an aspect ratio (width/height).
   static (double, double) _containSize(double containerW, double containerH, double aspectRatio) {
-    // Avoid division by zero.
     if (aspectRatio <= 0) aspectRatio = 1.0;
     if (containerW / containerH > aspectRatio) {
-      // Container is wider → image constrained by height.
       return (containerH * aspectRatio, containerH);
     } else {
-      // Container is taller or equal → image constrained by width.
       return (containerW, containerW / aspectRatio);
     }
   }
@@ -49,10 +47,6 @@ class FullscreenImageViewerScreen extends StatelessWidget {
   // ---------------------------------------------------------------------------
 
   /// Push a fullscreen PageView route.
-  ///
-  /// [itemCount] and [pageBuilder] define the pages.  [subtitle] is an optional
-  /// label prefixed to the "N / M" counter in the bottom overlay (e.g.
-  /// "archive.zip — 3 / 24").
   static void _openCore(
     BuildContext context, {
     required int itemCount,
@@ -124,17 +118,14 @@ class FullscreenImageViewerScreen extends StatelessWidget {
     final imageIndex = imageFiles.indexOf(files[index]);
     final adjustedIndex = imageIndex >= 0 ? imageIndex : 0;
 
-    final thumbBase = _thumbBase;
-    final fullBase = _fullBase;
-
     _openCore(
       context,
       itemCount: imageFiles.length,
       initialIndex: adjustedIndex,
       pageBuilder: (context, i) {
         final f = imageFiles[i];
-        final fullUrl = '$fullBase${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
-        final thumbUrl = '$thumbBase${f.path}';
+        final fullUrl = '$_fullBase${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
+        final thumbUrl = '$_thumbBase${f.path}';
         return _FullscreenPage(key: ValueKey('img_$i'), url: fullUrl, thumbUrl: thumbUrl, creatorId: creatorId, postId: postId);
       },
     );
@@ -145,9 +136,6 @@ class FullscreenImageViewerScreen extends StatelessWidget {
   // ---------------------------------------------------------------------------
 
   /// Open the fullscreen multi-image viewer for archive-sourced images.
-  ///
-  /// Each page lazy-loads its image via [archiveService.readEntry] so no
-  /// upfront extraction is needed.
   static void openArchive(
     BuildContext context, {
     required ArchiveService archiveService,
@@ -180,8 +168,114 @@ class FullscreenImageViewerScreen extends StatelessWidget {
 }
 
 // =============================================================================
-// FullscreenPageViewInner — the shared route page (extracted so the mixin
-// doesn't fight with StatelessWidget).
+// Zoomable image mixin — shared zoom/pan/clamp logic
+// =============================================================================
+
+/// Mixin that provides full-screen zoom/pan/clamp for any page widget.
+///
+/// The state's build method should include a [Listener] for mouse wheel,
+/// a [GestureDetector] for drag/pinch, and use [buildZoomTransform] in a
+/// [Transform] widget.  A [ClipRRect] wrapping the actual image (inside
+/// the gesture layer) provides rounded corners at the image bounds only.
+mixin _ZoomableMixin<T extends StatefulWidget> on State<T> {
+  double _zoomScale = 1.0;
+  Offset _zoomOffset = Offset.zero;
+  double _zoomStartScale = 1.0;
+  Offset _zoomStartOffset = Offset.zero;
+
+  /// Build the transform matrix for the image.
+  Matrix4 buildZoomTransform(double vw, double vh, double iw, double ih) {
+    final s = _zoomScale;
+    final ox = _zoomOffset.dx;
+    final oy = _zoomOffset.dy;
+    return Matrix4.identity()
+      ..setEntry(0, 3, vw / 2 + ox - iw / 2 * s)
+      ..setEntry(1, 3, vh / 2 + oy - ih / 2 * s)
+      ..setEntry(0, 0, s)
+      ..setEntry(1, 1, s);
+  }
+
+  void zoomOnScaleStart(ScaleStartDetails details) {
+    _zoomStartScale = _zoomScale;
+    _zoomStartOffset = _zoomOffset;
+  }
+
+  /// Handle mouse‑wheel scroll event (zoom at cursor).
+  void zoomOnScroll(double scrollDy, Offset cursorPos, Size viewport, double iw, double ih) {
+    final oldScale = _zoomScale;
+    final newScale = (_zoomScale * (1 - scrollDy * 0.001)).clamp(1.0, 5.0);
+    if (newScale == oldScale) return;
+    final vpc = Offset(viewport.width / 2, viewport.height / 2);
+    _zoomOffset = (cursorPos - vpc) + (_zoomOffset - (cursorPos - vpc)) * (newScale / oldScale);
+    _zoomScale = newScale;
+    _zoomClampPosition(viewport, iw, ih);
+  }
+
+  /// Handle [ScaleUpdateDetails] — drag (1 pointer) or pinch (2+ pointers).
+  void zoomOnScaleUpdate(ScaleUpdateDetails details, Size viewport, double iw, double ih) {
+    if (details.pointerCount <= 1) {
+      _zoomOffset += details.focalPointDelta;
+    } else {
+      final newScale = (_zoomStartScale * details.scale).clamp(1.0, 5.0);
+      final vpc = Offset(viewport.width / 2, viewport.height / 2);
+      final focal = details.localFocalPoint;
+      _zoomOffset = (focal - vpc) + (_zoomStartOffset - (focal - vpc)) * (newScale / _zoomStartScale);
+      _zoomScale = newScale;
+    }
+    _zoomClampPosition(viewport, iw, ih);
+  }
+
+  /// Handle double‑tap: toggle between 1.0× and 2.5× at the tap point.
+  void zoomOnDoubleTapDown(Offset tapPos, Size viewport, double iw, double ih) {
+    if (_zoomScale > 1.0 + 0.01) {
+      _zoomScale = 1.0;
+      _zoomOffset = Offset.zero;
+    } else {
+      const targetScale = 2.5;
+      final vpc = Offset(viewport.width / 2, viewport.height / 2);
+      _zoomOffset = (tapPos - vpc) + (_zoomOffset - (tapPos - vpc)) * (targetScale / _zoomScale);
+      _zoomScale = targetScale;
+    }
+    _zoomClampPosition(viewport, iw, ih);
+  }
+
+  /// Clamp [zoomOffset] so the image stays within the viewport.
+  void _zoomClampPosition(Size viewport, double iw, double ih) {
+    final vpc = Offset(viewport.width / 2, viewport.height / 2);
+    final imgCenter = vpc + _zoomOffset;
+    final halfW = iw * _zoomScale / 2;
+    final halfH = ih * _zoomScale / 2;
+
+    final left = imgCenter.dx - halfW;
+    final right = imgCenter.dx + halfW;
+    final top = imgCenter.dy - halfH;
+    final bottom = imgCenter.dy + halfH;
+
+    double dx = _zoomOffset.dx;
+    double dy = _zoomOffset.dy;
+
+    // Horizontal clamp
+    if (iw * _zoomScale <= viewport.width) {
+      dx = 0;
+    } else {
+      if (left > 0) dx -= left;
+      if (right < viewport.width) dx += viewport.width - right;
+    }
+
+    // Vertical clamp
+    if (ih * _zoomScale <= viewport.height) {
+      dy = 0;
+    } else {
+      if (top > 0) dy -= top;
+      if (bottom < viewport.height) dy += viewport.height - bottom;
+    }
+
+    _zoomOffset = Offset(dx, dy);
+  }
+}
+
+// =============================================================================
+// FullscreenPageViewInner — the shared route page
 // =============================================================================
 
 class _FullscreenPageViewInner extends StatefulWidget {
@@ -306,47 +400,6 @@ class _FullscreenPageViewInnerState extends State<_FullscreenPageViewInner> {
 }
 
 // =============================================================================
-// ZoomableImageMixin — shared InteractiveViewer gesture handling
-// =============================================================================
-
-mixin ZoomableImageMixin<T extends StatefulWidget> on State<T> {
-  final TransformationController _transformController = TransformationController();
-  bool _isZoomed = false;
-
-  void initZoomable() {
-    _transformController.addListener(_onTransformChanged);
-  }
-
-  void disposeZoomable() {
-    _transformController.removeListener(_onTransformChanged);
-    _transformController.dispose();
-  }
-
-  void resetZoom() {
-    _transformController.value = Matrix4.identity();
-    _isZoomed = false;
-  }
-
-  void _onTransformChanged() {
-    final scale = _transformController.value.getMaxScaleOnAxis();
-    final zoomed = scale > 1.05;
-    if (zoomed != _isZoomed) {
-      setState(() => _isZoomed = zoomed);
-    }
-  }
-
-  Widget wrapZoomable(Widget imageWidget) {
-    return InteractiveViewer(
-      transformationController: _transformController,
-      minScale: 0.5,
-      maxScale: 5.0,
-      boundaryMargin: EdgeInsets.zero,
-      child: Center(child: imageWidget),
-    );
-  }
-}
-
-// =============================================================================
 // _FullscreenPage — a single page for API-sourced images
 // =============================================================================
 
@@ -362,24 +415,67 @@ class _FullscreenPage extends StatefulWidget {
   State<_FullscreenPage> createState() => _FullscreenPageState();
 }
 
-class _FullscreenPageState extends State<_FullscreenPage> with ZoomableImageMixin, SingleTickerProviderStateMixin {
-  double _progress = 0;
-  int _loadedBytes = 0;
-  int _totalBytes = 0;
+class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_FullscreenPage> {
+  /// Cached image provider — same instance across rebuilds prevents
+  /// re-resolving the image on every build.
+  late final ImageProvider _imageProvider;
+
   ImageStream? _imageStream;
-  ImageStreamListener? _listener;
+  ImageStreamListener? _imageListener;
   ImageInfo? _imageInfo;
-  bool _errored = false;
+
   File? _thumbnailFile;
-  AnimationController? _fadeController;
+  bool _hasLoaded = false;
+  bool _fadeCompleted = false;
+  bool _errored = false;
+  double? _aspectRatio;
+
+  // Reactive progress signals — read in SignalBuilder inside the skeleton so
+  // progress text / border repaint live-update without a full state rebuild.
+  final _loadedBytes = signal<int>(0);
+  final _totalBytes = signal<int>(0);
 
   @override
   void initState() {
     super.initState();
-    initZoomable();
-    _fadeController = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
+    _imageProvider = KemonoImageProvider(widget.url, creatorId: widget.creatorId, postId: widget.postId);
     _loadThumbnail();
-    _load();
+    _resolveImage();
+  }
+
+  void _resolveImage() {
+    final config = createLocalImageConfiguration(context);
+    final stream = _imageProvider.resolve(config);
+    final listener = ImageStreamListener(
+      (imageInfo, synchronousCall) {
+        if (!mounted) return;
+        _imageInfo = imageInfo;
+        _aspectRatio = imageInfo.image.width / imageInfo.image.height;
+        _hasLoaded = true;
+        setState(() {});
+      },
+      onChunk: (chunk) {
+        _loadedBytes.value = chunk.cumulativeBytesLoaded;
+        if (chunk.expectedTotalBytes != null && chunk.expectedTotalBytes! > 0) {
+          _totalBytes.value = chunk.expectedTotalBytes!;
+        }
+      },
+      onError: (exception, stackTrace) {
+        debugPrint('Fullscreen image error for ${widget.url}:\n$exception');
+        if (mounted) setState(() => _errored = true);
+      },
+    );
+    stream.addListener(listener);
+    _imageStream = stream;
+    _imageListener = listener;
+  }
+
+  @override
+  void dispose() {
+    if (_imageStream != null && _imageListener != null) {
+      _imageStream!.removeListener(_imageListener!);
+    }
+    super.dispose();
   }
 
   Future<void> _loadThumbnail() async {
@@ -391,50 +487,6 @@ class _FullscreenPageState extends State<_FullscreenPage> with ZoomableImageMixi
     } catch (_) {
       // Non-critical — skeleton appears without blur.
     }
-  }
-
-  void _load() {
-    final provider = KemonoImageProvider(widget.url, creatorId: widget.creatorId, postId: widget.postId);
-    final stream = provider.resolve(const ImageConfiguration());
-    _imageStream = stream;
-    _listener = ImageStreamListener(
-      (ImageInfo info, bool _) {
-        if (mounted) {
-          setState(() {
-            _imageInfo = info;
-            _errored = false;
-          });
-          _fadeController?.forward();
-        }
-      },
-      onChunk: (chunk) {
-        if (mounted) {
-          setState(() {
-            _loadedBytes = chunk.cumulativeBytesLoaded;
-            if (chunk.expectedTotalBytes != null && chunk.expectedTotalBytes! > 0) {
-              _totalBytes = chunk.expectedTotalBytes!;
-              _progress = (_loadedBytes / _totalBytes).clamp(0.0, 1.0);
-            }
-          });
-        }
-      },
-      onError: (error, stack) {
-        if (mounted) {
-          setState(() => _errored = true);
-          debugPrint('FullscreenImageViewer error for ${widget.url}:\n$error\n$stack');
-        }
-      },
-    );
-    stream.addListener(_listener!);
-  }
-
-  @override
-  void dispose() {
-    disposeZoomable();
-    _imageStream?.removeListener(_listener!);
-    _imageInfo?.dispose();
-    _fadeController?.dispose();
-    super.dispose();
   }
 
   @override
@@ -454,65 +506,89 @@ class _FullscreenPageState extends State<_FullscreenPage> with ZoomableImageMixi
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final containerW = constraints.maxWidth;
-        final containerH = constraints.maxHeight;
+        final vw = constraints.maxWidth;
+        final vh = constraints.maxHeight;
 
-        if (_imageInfo != null) {
-          final img = _imageInfo!.image;
-          final ratio = img.width / img.height;
-          final (w, h) = FullscreenImageViewerScreen._containSize(containerW, containerH, ratio);
+        // Subscribe to metaReady for reactive aspect-ratio changes.
+        ImageMetaStore.instance.metaReady.value;
+        final meta = ImageMetaStore.instance.lookup(widget.thumbUrl);
+        final ratio = meta?.aspectRatio ?? _aspectRatio ?? 1.0;
+        final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
 
-          final imageWidget = ClipRRect(
-            borderRadius: BorderRadius.circular(15),
-            child: SizedBox(
-              width: w,
-              height: h,
-              child: RawImage(image: img, fit: BoxFit.contain),
-            ),
-          );
-
-          // Fade in over skeleton if animation hasn't completed.
-          if (_fadeController != null && _fadeController!.value < 1.0) {
-            return wrapZoomable(
-              Stack(
-                alignment: Alignment.center,
+        return SizedBox(
+          width: vw,
+          height: vh,
+          child: Listener(
+            onPointerSignal: (event) {
+              if (event is PointerScrollEvent && _imageInfo != null && _hasLoaded) {
+                setState(() => zoomOnScroll(
+                  event.scrollDelta.dy,
+                  event.localPosition,
+                  Size(vw, vh),
+                  iw, ih,
+                ));
+              }
+            },
+            child: GestureDetector(
+              onScaleStart: zoomOnScaleStart,
+              onScaleUpdate: (details) {
+                if (_imageInfo != null) {
+                  setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
+                }
+              },
+              onDoubleTapDown: (details) {
+                if (_imageInfo != null && _hasLoaded) {
+                  setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
+                }
+              },
+              child: Stack(
+                fit: StackFit.expand,
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(15),
-                    child: SizedBox(width: w, height: h, child: _buildSkeletonContent(w, h)),
-                  ),
-                  FadeTransition(opacity: _fadeController!, child: imageWidget),
+                  // ---- Background fill ----
+                  Container(color: Colors.black),
+
+                  // ---- Skeleton (behind the image) ----
+                  if (!_fadeCompleted)
+                    Center(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(15),
+                        child: SizedBox(width: iw, height: ih, child: _buildSkeletonContent(iw, ih)),
+                      ),
+                    ),
+
+                  // ---- Zoomable image (fades in over skeleton) ----
+                  if (_imageInfo != null)
+                    AnimatedOpacity(
+                      opacity: _hasLoaded ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 300),
+                      onEnd: () {
+                        if (_hasLoaded && mounted) {
+                          setState(() => _fadeCompleted = true);
+                        }
+                      },
+                      child: Center(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(15),
+                          child: Transform(
+                            transform: buildZoomTransform(vw, vh, iw, ih),
+                            alignment: Alignment.center,
+                            child: SizedBox(
+                              width: iw,
+                              height: ih,
+                              child: RawImage(
+                                image: _imageInfo!.image,
+                                fit: BoxFit.contain,
+                                isAntiAlias: true,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
-            );
-          }
-
-          return wrapZoomable(imageWidget);
-        }
-
-        // Loading — reactive skeleton that resizes when metadata arrives.
-        return SignalBuilder(
-          builder: (context) {
-            // Subscribe to metaReady for reactive aspect-ratio updates.
-            ImageMetaStore.instance.metaReady.value;
-            final meta = ImageMetaStore.instance.lookup(widget.thumbUrl);
-            final ratio = meta?.aspectRatio;
-
-            if (ratio != null) {
-              final (w, h) = FullscreenImageViewerScreen._containSize(containerW, containerH, ratio);
-              return Center(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(15),
-                  child: SizedBox(width: w, height: h, child: _buildSkeletonContent(w, h)),
-                ),
-              );
-            }
-
-            // No metadata yet — skeleton fills available space.
-            return Center(
-              child: ClipRRect(borderRadius: BorderRadius.circular(15), child: _buildSkeletonContent(containerW, containerH)),
-            );
-          },
+            ),
+          ),
         );
       },
     );
@@ -540,37 +616,45 @@ class _FullscreenPageState extends State<_FullscreenPage> with ZoomableImageMixi
         // Dark overlay when using blurred thumbnail for readability.
         if (_thumbnailFile != null) Container(width: w, height: h, color: Colors.black.withValues(alpha: 0.3)),
 
-        // Clockwise border progress.
-        CustomPaint(
-          size: Size(w, h),
-          painter: _ClockwiseBorderPainter(progress: _progress),
+        // Clockwise border progress (reactive via signal).
+        SignalBuilder(
+          builder: (context) {
+            final loaded = _loadedBytes();
+            final total = _totalBytes();
+            final progress = total > 0 ? (loaded / total).clamp(0.0, 1.0) : 0.0;
+
+            return CustomPaint(
+              size: Size(w, h),
+              painter: _ClockwiseBorderPainter(progress: progress),
+            );
+          },
         ),
 
-        // Progress label: file size or percentage.
-        // Centered in the skeleton area to avoid overlap with the page
-        // counter overlay at the bottom of the screen.
+        // Progress label: file size or percentage (reactive via signal).
         Positioned(
           top: shortest * 0.06,
-          child: Text(
-            _buildProgressLabel(),
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.6),
-              fontSize: shortest * 0.04,
-              fontWeight: FontWeight.w500,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
+          child: SignalBuilder(
+            builder: (context) {
+              final loaded = _loadedBytes();
+              final total = _totalBytes();
+              final label = total > 0
+                  ? '${ImageMetaStore.formatBytes(loaded)} / ${ImageMetaStore.formatBytes(total)}'
+                  : '0%';
+              return Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.6),
+                  fontSize: shortest * 0.04,
+                  fontWeight: FontWeight.w500,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              );
+            },
           ),
         ),
       ],
     );
-  }
-
-  String _buildProgressLabel() {
-    if (_totalBytes > 0) {
-      return '${ImageMetaStore.formatBytes(_loadedBytes)} / ${ImageMetaStore.formatBytes(_totalBytes)}';
-    }
-    return '${(_progress * 100).toInt()}%';
   }
 }
 
@@ -589,31 +673,44 @@ class _ArchivePage extends StatefulWidget {
   State<_ArchivePage> createState() => _ArchivePageState();
 }
 
-class _ArchivePageState extends State<_ArchivePage> with ZoomableImageMixin {
+class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_ArchivePage> {
   Uint8List? _data;
   bool _errored = false;
+  double? _aspectRatio;
 
   @override
   void initState() {
     super.initState();
-    initZoomable();
     _load();
   }
 
   Future<void> _load() async {
     try {
       final data = await widget.archiveService.readEntry(widget.localPath, widget.entryPath);
-      if (mounted) setState(() => _data = data);
+      if (!mounted) return;
+
+      // Pre-decode first frame to get aspect ratio for bounds clamping.
+      double? ar;
+      try {
+        final codec = await instantiateImageCodec(data);
+        final frameInfo = await codec.getNextFrame();
+        final img = frameInfo.image;
+        ar = img.width / img.height;
+        img.dispose();
+        codec.dispose();
+      } catch (_) {
+        // Fallback: use 1:1 ratio.
+        ar = null;
+      }
+
+      setState(() {
+        _data = data;
+        _aspectRatio = ar;
+      });
     } catch (e) {
       debugPrint('ArchivePage load error for ${widget.entryPath}:\n$e');
       if (mounted) setState(() => _errored = true);
     }
-  }
-
-  @override
-  void dispose() {
-    disposeZoomable();
-    super.dispose();
   }
 
   @override
@@ -631,17 +728,76 @@ class _ArchivePageState extends State<_ArchivePage> with ZoomableImageMixin {
       );
     }
 
-    if (_data != null) {
-      return wrapZoomable(
-        ClipRRect(
-          borderRadius: BorderRadius.circular(15),
-          child: Image.memory(_data!, fit: BoxFit.contain),
+    if (_data == null) {
+      return Center(
+        child: SizedBox(
+          width: 32,
+          height: 32,
+          child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white.withValues(alpha: 0.6)),
         ),
       );
     }
 
-    return Center(
-      child: SizedBox(width: 32, height: 32, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white.withValues(alpha: 0.6))),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final vw = constraints.maxWidth;
+        final vh = constraints.maxHeight;
+        final ratio = _aspectRatio ?? 1.0;
+        final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
+
+        return SizedBox(
+          width: vw,
+          height: vh,
+          child: Listener(
+            onPointerSignal: (event) {
+              if (event is PointerScrollEvent) {
+                setState(() => zoomOnScroll(
+                  event.scrollDelta.dy,
+                  event.localPosition,
+                  Size(vw, vh),
+                  iw, ih,
+                ));
+              }
+            },
+            child: GestureDetector(
+              onScaleStart: zoomOnScaleStart,
+              onScaleUpdate: (details) {
+                setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
+              },
+              onDoubleTapDown: (details) {
+                setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
+              },
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Black fill behind image.
+                  Container(color: Colors.black),
+
+                  // Zoomable image.
+                  Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(15),
+                      child: Transform(
+                        transform: buildZoomTransform(vw, vh, iw, ih),
+                        alignment: Alignment.center,
+                        child: SizedBox(
+                          width: iw,
+                          height: ih,
+                          child: Image.memory(
+                            _data!,
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.high,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
