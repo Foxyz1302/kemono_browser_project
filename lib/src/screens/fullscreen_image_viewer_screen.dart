@@ -184,15 +184,15 @@ mixin _ZoomableMixin<T extends StatefulWidget> on State<T> {
   Offset _zoomStartOffset = Offset.zero;
 
   /// Build the transform matrix for the image.
+  ///
+  /// [Center] already places the image at the viewport centre, so the
+  /// matrix only handles zoom and pan — no centering translation.
   Matrix4 buildZoomTransform(double vw, double vh, double iw, double ih) {
-    final s = _zoomScale;
-    final ox = _zoomOffset.dx;
-    final oy = _zoomOffset.dy;
     return Matrix4.identity()
-      ..setEntry(0, 3, vw / 2 + ox - iw / 2 * s)
-      ..setEntry(1, 3, vh / 2 + oy - ih / 2 * s)
-      ..setEntry(0, 0, s)
-      ..setEntry(1, 1, s);
+      ..setEntry(0, 3, _zoomOffset.dx)
+      ..setEntry(1, 3, _zoomOffset.dy)
+      ..setEntry(0, 0, _zoomScale)
+      ..setEntry(1, 1, _zoomScale);
   }
 
   void zoomOnScaleStart(ScaleStartDetails details) {
@@ -429,6 +429,7 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
   bool _fadeCompleted = false;
   bool _errored = false;
   double? _aspectRatio;
+  bool _resolved = false;
 
   // Reactive progress signals — read in SignalBuilder inside the skeleton so
   // progress text / border repaint live-update without a full state rebuild.
@@ -440,7 +441,15 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
     super.initState();
     _imageProvider = KemonoImageProvider(widget.url, creatorId: widget.creatorId, postId: widget.postId);
     _loadThumbnail();
-    _resolveImage();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_resolved) {
+      _resolved = true;
+      _resolveImage();
+    }
   }
 
   void _resolveImage() {
