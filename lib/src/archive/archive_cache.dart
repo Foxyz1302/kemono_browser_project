@@ -77,11 +77,14 @@ class ArchiveCache {
         cancelToken: cancelToken,
         onProgress: onProgress,
       );
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('ArchiveCache: download failed for $url: $e\n$st');
       // Clean up partial download on failure.
       try {
         await File(localPath).delete();
-      } catch (_) {}
+      } catch (e2, st2) {
+        debugPrint('ArchiveCache: failed to delete partial $localPath: $e2\n$st2');
+      }
       rethrow;
     }
 
@@ -115,6 +118,11 @@ class ArchiveCache {
     }
   }
 
+  /// Returns the cached file size for [url], or `null` if not in the cache.
+  int? getFileSize(String url) {
+    return _findByUrl(url)?.fileSize;
+  }
+
   /// Remove a single archive from the cache (file + manifest entry).
   Future<void> remove(String url) async {
     final entry = _findByUrl(url);
@@ -122,7 +130,9 @@ class ArchiveCache {
     _entries.remove(entry);
     try {
       await File(entry.localPath).delete();
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('ArchiveCache: failed to delete ${entry.localPath}: $e\n$st');
+    }
     await _saveManifest();
   }
 
@@ -131,7 +141,9 @@ class ArchiveCache {
     for (final entry in _entries) {
       try {
         await File(entry.localPath).delete();
-      } catch (_) {}
+      } catch (e, st) {
+        debugPrint('ArchiveCache: failed to delete ${entry.localPath} during clear: $e\n$st');
+      }
     }
     _entries.clear();
     await _saveManifest();
@@ -142,11 +154,7 @@ class ArchiveCache {
   // ---------------------------------------------------------------------------
 
   _CacheEntry? _findByUrl(String url) {
-    try {
-      return _entries.firstWhere((e) => e.url == url);
-    } catch (_) {
-      return null;
-    }
+    return _entries.where((e) => e.url == url).firstOrNull;
   }
 
   Future<void> _trim() async {
@@ -159,8 +167,10 @@ class ArchiveCache {
     for (final entry in toEvict) {
       try {
         await File(entry.localPath).delete();
-      } catch (_) {}
-      debugPrint('ArchiveCache: evicted ${entry.url}');
+        debugPrint('ArchiveCache: evicted ${entry.url}');
+      } catch (e, st) {
+        debugPrint('ArchiveCache: failed to evict ${entry.url}: $e\n$st');
+      }
     }
   }
 
@@ -178,8 +188,8 @@ class ArchiveCache {
         // Remove entries whose files no longer exist on disk.
         _entries.removeWhere((e) => !File(e.localPath).existsSync());
       }
-    } catch (e) {
-      debugPrint('ArchiveCache: failed to load manifest — $e');
+    } catch (e, st) {
+      debugPrint('ArchiveCache: failed to load manifest — $e\n$st');
       _entries = [];
     }
   }
@@ -188,8 +198,8 @@ class ArchiveCache {
     try {
       final json = jsonEncode(_entries.map((e) => e.toJson()).toList());
       await File(_manifestPath).writeAsString(json);
-    } catch (e) {
-      debugPrint('ArchiveCache: failed to save manifest — $e');
+    } catch (e, st) {
+      debugPrint('ArchiveCache: failed to save manifest — $e\n$st');
     }
   }
 

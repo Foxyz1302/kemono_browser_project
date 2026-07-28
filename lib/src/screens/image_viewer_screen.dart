@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:signals/signals_flutter.dart';
 
 class MyImageViewerScreen extends StatelessWidget {
   final List<FileInfo> files;
@@ -572,9 +572,9 @@ class _ImageViewerPageState extends State<_ImageViewerPage> {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          spacing: 8,
           children: [
             Icon(Icons.broken_image_outlined, color: Colors.white.withValues(alpha: 0.4), size: 48),
-            const SizedBox(height: 8),
             Text('Image unavailable', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 14)),
           ],
         ),

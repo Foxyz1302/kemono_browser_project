@@ -4,6 +4,8 @@ import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'interceptors/auth_interceptor.dart';
+import 'interceptors/retry_interceptor.dart';
 import 'models.dart';
 
 class PawchiveClient {
@@ -13,12 +15,16 @@ class PawchiveClient {
   static const _baseUrl = 'https://pawchive.pw';
   static const _apiPrefix = '/api/v1';
 
-  Dio dio = Dio(BaseOptions(baseUrl: _baseUrl, followRedirects: false, validateStatus: (status) => status != null && status < 500));
+  late final Dio dio;
   CookieJar? cookieJar;
 
   PawchiveClient._();
 
-  Future<void> init() async {
+  /// Initialise the HTTP client: cookie storage, default config, and interceptors.
+  ///
+  /// [onReLogin] is called by [AuthInterceptor] when a 302/401 response
+  /// suggests the session has expired. See [AuthInterceptor] for details.
+  Future<void> init({Future<void> Function()? onReLogin}) async {
     final appDir = await getApplicationDocumentsDirectory();
     cookieJar = PersistCookieJar(
       ignoreExpires: true,
@@ -30,49 +36,50 @@ class PawchiveClient {
       followRedirects: false,
       validateStatus: (status) => status != null && status < 500,
       connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
+      headers: {'Accept': 'application/json'},
     ));
 
-    dio.interceptors.add(CookieManager(cookieJar!));
+    dio.interceptors.addAll([
+      CookieManager(cookieJar!),
+      if (onReLogin != null)
+        AuthInterceptor(dio: dio, onReLogin: onReLogin),
+      RetryInterceptor(),
+    ]);
   }
 
   Future<Map<String, String>?> login({
     required String username,
     required String password,
   }) async {
-    try {
-      final response = await dio.post(
-        '/account/login',
-        data: {
-          'username': username,
-          'password': password,
-          'location': '/artists',
-        },
-        options: Options(
-          contentType: Headers.formUrlEncodedContentType,
-          responseType: ResponseType.plain,
-          followRedirects: false,
-          sendTimeout: const Duration(seconds: 10),
-          receiveTimeout: const Duration(seconds: 10),
-        ),
-      );
+    final response = await dio.post(
+      '/account/login',
+      data: {
+        'username': username,
+        'password': password,
+        'location': '/artists',
+      },
+      options: Options(
+        contentType: Headers.formUrlEncodedContentType,
+        responseType: ResponseType.plain,
+        followRedirects: false,
+        sendTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 10),
+      ),
+    );
 
-      debugPrint('Login response: status=${response.statusCode}');
+    debugPrint('Login response: status=${response.statusCode}');
 
-      if (response.statusCode == 302) {
-        final location = response.headers.value('location');
-        final setCookie = response.headers.value('set-cookie');
-        if (location != null || setCookie != null) {
-          return {'location': location ?? '', 'set_cookie': setCookie ?? ''};
-        }
+    if (response.statusCode == 302) {
+      final location = response.headers.value('location');
+      final setCookie = response.headers.value('set-cookie');
+      if (location != null || setCookie != null) {
+        return {'location': location ?? '', 'set_cookie': setCookie ?? ''};
       }
-
-      debugPrint('Login failed: unexpected status ${response.statusCode}');
-      return null;
-    } on DioException catch (e) {
-      debugPrint('Login DioException: type=${e.type}, message=${e.message}');
-      rethrow;
     }
+
+    debugPrint('Login failed: unexpected status ${response.statusCode}');
+    return null;
   }
 
   void _expectOk(Response response, String path) {
@@ -82,6 +89,11 @@ class PawchiveClient {
     }
   }
 
+  /// Fetch all creators from the index.
+  ///
+  /// NOTE: This endpoint requires `Accept: text/css` — it returns JSON regardless
+  /// but rejects requests with `Accept: application/json`. This is a known server
+  /// quirk; keep `text/css` until the upstream issue is resolved.
   Future<List<Creator>> getCreators({int? offset}) async {
     final response = await dio.get(
       '$_apiPrefix/creators',

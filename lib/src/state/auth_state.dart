@@ -1,7 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:signals/signals_flutter.dart';
 
 import '../api/pawchive_client.dart';
 
@@ -64,6 +64,17 @@ class AuthState {
       authStatus.value = AuthStatus.loggedOut;
       return;
     }
+    await login(user, pass);
+  }
+
+  /// Re-authenticate with saved credentials. Used by [AuthInterceptor] after
+  /// session expiry.
+  ///
+  /// Throws if no credentials are saved or the login request fails.
+  Future<void> reLogin() async {
+    final user = _box.get('username', defaultValue: '') as String;
+    final pass = _box.get('password', defaultValue: '') as String;
+    if (user.isEmpty || pass.isEmpty) throw Exception('No saved credentials');
     await login(user, pass);
   }
 

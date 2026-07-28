@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:signals/signals_flutter.dart';
 
 /// A debounced search bar that immediately updates a signal on every keystroke
 /// and fires [onSearch] after 150ms of inactivity.

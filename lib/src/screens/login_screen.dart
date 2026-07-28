@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:signals/signals_flutter.dart';
 
 import '../state/auth_state.dart';
 
@@ -34,6 +34,9 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
     await _auth.login(_userController.text, _passController.text);
+    if (_auth.authStatus.peek() == AuthStatus.loggedIn && mounted) {
+      Navigator.pop(context);
+    }
   }
 
   @override

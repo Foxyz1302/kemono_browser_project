@@ -342,6 +342,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.0.0"
+  flutter_staggered_grid_view:
+    dependency: "direct main"
+    description:
+      name: flutter_staggered_grid_view
+      sha256: "19e7abb550c96fbfeb546b23f3ff356ee7c59a019a651f8f102a4ba9b7349395"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.7.0"
   flutter_svg:
     dependency: transitive
     description:
@@ -945,7 +953,7 @@ packages:
     source: hosted
     version: "7.0.0"
   signals_flutter:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: signals_flutter
       sha256: f0285fd2f98d720724df879c258dc41725f260f8e5b1184655ef64ba679197ad

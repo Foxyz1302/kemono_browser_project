@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter, instantiateImageCodec;
+import 'dart:ui' show instantiateImageCodec;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/archive/archive_service.dart';
@@ -11,7 +13,7 @@ import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
 import 'package:path/path.dart' as p;
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:signals/signals_flutter.dart';
 
 // =============================================================================
 // FullscreenImageViewerScreen — entry points
@@ -67,7 +69,7 @@ class FullscreenImageViewerScreen extends StatelessWidget {
         .push(
           PageRouteBuilder(
             opaque: false,
-            barrierColor: Colors.black87,
+            barrierColor: Colors.transparent,
             barrierDismissible: true,
             transitionDuration: const Duration(milliseconds: 200),
             reverseTransitionDuration: const Duration(milliseconds: 200),
@@ -171,22 +173,104 @@ class FullscreenImageViewerScreen extends StatelessWidget {
 // Zoomable image mixin — shared zoom/pan/clamp logic
 // =============================================================================
 
-/// Mixin that provides full-screen zoom/pan/clamp for any page widget.
+/// Mixin that provides full-screen zoom/pan/clamp for any page widget via
+/// raw [Listener] pointer events (no gesture-arena delay or competition).
+/// Only double-tap uses a [GestureDetector] / [DoubleTapGestureRecognizer].
 ///
-/// The state's build method should include a [Listener] for mouse wheel,
-/// a [GestureDetector] for drag/pinch, and use [buildZoomTransform] in a
-/// [Transform] widget.  A [ClipRRect] wrapping the actual image (inside
-/// the gesture layer) provides rounded corners at the image bounds only.
-mixin _ZoomableMixin<T extends StatefulWidget> on State<T> {
+/// Requires [TickerProvider] (provided by [TickerProviderStateMixin]) for
+/// the fling animation and [AnimationController].
+mixin _ZoomableMixin<T extends StatefulWidget> on State<T>, TickerProvider {
+  // -----------------------------------------------------------------------
+  // Zoom / pan state
+  // -----------------------------------------------------------------------
   double _zoomScale = 1.0;
   Offset _zoomOffset = Offset.zero;
-  double _zoomStartScale = 1.0;
-  Offset _zoomStartOffset = Offset.zero;
 
-  /// Build the transform matrix for the image.
-  ///
-  /// [Center] already places the image at the viewport centre, so the
-  /// matrix only handles zoom and pan — no centering translation.
+  // -----------------------------------------------------------------------
+  // Animation (double-tap smooth zoom)
+  // -----------------------------------------------------------------------
+  AnimationController? _animController;
+  bool _animating = false;
+  int _animId = 0;
+
+  // -----------------------------------------------------------------------
+  // Fling / inertia
+  // -----------------------------------------------------------------------
+  Ticker? _flingTicker;
+  double _flingVx = 0, _flingVy = 0;
+  int _flingId = 0;
+
+  // -----------------------------------------------------------------------
+  // Raw pointer tracking (all touch zoom/pan, no gesture arena)
+  // -----------------------------------------------------------------------
+  final Map<int, Offset> _pointerPositions = {};
+  final Map<int, Offset> _previousPositions = {};
+  int _prevPointerCount = 0;
+  double? _pinchStartDist;
+  double _pinchStartScale = 1.0;
+
+  // Velocity samples for fling computation.
+  final List<_VelocitySample> _velocitySamples = [];
+  static const int _maxVelocitySamples = 4;
+
+  // Stashed viewport/image dims — set in build() so raw handlers can clamp.
+  double _vpW = 0, _vpH = 0, _imgW = 0, _imgH = 0;
+
+  // -----------------------------------------------------------------------
+  // External callback — fires on every scale change so parent toggles physics.
+  // -----------------------------------------------------------------------
+  ValueChanged<double>? onZoomChanged;
+
+  /// Fires when a quick tap (no drag) lands outside the image bounds.
+  VoidCallback? onTapOutsideImage;
+
+  /// Fires when the dismiss fling animation completes — the page pops itself.
+  VoidCallback? onDismissed;
+
+  /// Reports dismiss drag progress (0..1) so the parent can fade the backdrop.
+  ValueChanged<double>? onDismissProgress;
+
+  // Swipe-to-dismiss state (image-only — the route chrome stays put).
+  AnimationController? _dismissCtrl;
+  bool _dismissing = false;
+
+  // Tap / dismiss-drag tracking.
+  Offset? _downPos;
+  Offset? _downLocal;
+  Duration _downTime = Duration.zero;
+  double _dragAccum = 0;
+  bool _dismissDragging = false;
+  bool _dismissLocked = false;
+
+  double get dismissOffset => _dismissCtrl?.value ?? 0;
+
+  double get dismissProgress => _vpH > 0 ? (dismissOffset.abs() / (_vpH * 0.5)).clamp(0.0, 1.0) : 0.0;
+
+  // -----------------------------------------------------------------------
+  // Lifecycle
+  // -----------------------------------------------------------------------
+
+  void initZoomAnimation(TickerProvider vsync) {
+    _animController = AnimationController(duration: const Duration(milliseconds: 200), vsync: vsync);
+    _dismissCtrl = AnimationController.unbounded(vsync: vsync)
+      ..addListener(() {
+        if (!mounted) return;
+        setState(() {});
+        onDismissProgress?.call(dismissProgress);
+      });
+  }
+
+  void disposeZoomAnimation() {
+    _cancelAnimation();
+    _cancelFling();
+    _animController?.dispose();
+    _dismissCtrl?.dispose();
+  }
+
+  // -----------------------------------------------------------------------
+  // Build helper
+  // -----------------------------------------------------------------------
+
   Matrix4 buildZoomTransform(double vw, double vh, double iw, double ih) {
     return Matrix4.identity()
       ..setEntry(0, 3, _zoomOffset.dx)
@@ -195,13 +279,12 @@ mixin _ZoomableMixin<T extends StatefulWidget> on State<T> {
       ..setEntry(1, 1, _zoomScale);
   }
 
-  void zoomOnScaleStart(ScaleStartDetails details) {
-    _zoomStartScale = _zoomScale;
-    _zoomStartOffset = _zoomOffset;
-  }
+  // -----------------------------------------------------------------------
+  // Mouse-wheel zoom
+  // -----------------------------------------------------------------------
 
-  /// Handle mouse‑wheel scroll event (zoom at cursor).
   void zoomOnScroll(double scrollDy, Offset cursorPos, Size viewport, double iw, double ih) {
+    _cancelFling();
     final oldScale = _zoomScale;
     final newScale = (_zoomScale * (1 - scrollDy * 0.001)).clamp(1.0, 5.0);
     if (newScale == oldScale) return;
@@ -209,34 +292,312 @@ mixin _ZoomableMixin<T extends StatefulWidget> on State<T> {
     _zoomOffset = (cursorPos - vpc) + (_zoomOffset - (cursorPos - vpc)) * (newScale / oldScale);
     _zoomScale = newScale;
     _zoomClampPosition(viewport, iw, ih);
+    _checkHaptic(oldScale, _zoomScale);
+    onZoomChanged?.call(_zoomScale);
   }
 
-  /// Handle [ScaleUpdateDetails] — drag (1 pointer) or pinch (2+ pointers).
-  void zoomOnScaleUpdate(ScaleUpdateDetails details, Size viewport, double iw, double ih) {
-    if (details.pointerCount <= 1) {
-      _zoomOffset += details.focalPointDelta;
+  // -----------------------------------------------------------------------
+  // Raw pointer handlers (pan + pinch, zero arena delay)
+  // -----------------------------------------------------------------------
+
+  void handlePointerDown(PointerDownEvent event) {
+    _cancelFling();
+    _pointerPositions[event.pointer] = event.position;
+    _previousPositions[event.pointer] = event.position;
+    _velocitySamples.clear();
+    _prevPointerCount = _pointerPositions.length;
+
+    if (_pointerPositions.length == 1) {
+      _downPos = event.position;
+      _downLocal = event.localPosition;
+      _downTime = event.timeStamp;
+      _dragAccum = 0;
+      _dismissDragging = false;
+      _dismissLocked = false;
     } else {
-      final newScale = (_zoomStartScale * details.scale).clamp(1.0, 5.0);
-      final vpc = Offset(viewport.width / 2, viewport.height / 2);
-      final focal = details.localFocalPoint;
-      _zoomOffset = (focal - vpc) + (_zoomStartOffset - (focal - vpc)) * (newScale / _zoomStartScale);
-      _zoomScale = newScale;
+      _dismissDragging = false;
+      _dismissLocked = true;
     }
-    _zoomClampPosition(viewport, iw, ih);
+
+    if (_pointerPositions.length == 2) {
+      _pinchStartDist = _distanceBetweenPoints();
+      _pinchStartScale = _zoomScale;
+    }
   }
 
-  /// Handle double‑tap: toggle between 1.0× and 2.5× at the tap point.
+  void handlePointerMove(PointerMoveEvent event) {
+    final prev = _previousPositions[event.pointer] ?? event.position;
+    final delta = event.position - prev;
+    _pointerPositions[event.pointer] = event.position;
+    _previousPositions[event.pointer] = event.position;
+    final pointerCount = _pointerPositions.length;
+
+    if (pointerCount >= 2) {
+      // Pinch zoom.
+      final dist = _distanceBetweenPoints();
+      if (_pinchStartDist != null && _pinchStartDist! > 0 && dist > 0) {
+        final oldScale = _zoomScale;
+        final newScale = (_pinchStartScale * dist / _pinchStartDist!).clamp(1.0, 5.0);
+        if (newScale != oldScale) {
+          setState(() {
+            _zoomScale = newScale;
+            _zoomClampPosition(Size(_vpW, _vpH), _imgW, _imgH);
+          });
+          _checkHaptic(oldScale, _zoomScale);
+          onZoomChanged?.call(_zoomScale);
+        }
+      }
+    } else if (pointerCount == 1 && _zoomScale > 1.0) {
+      // Single-finger pan (only when zoomed in).
+      setState(() {
+        _zoomOffset += delta;
+        _zoomClampPosition(Size(_vpW, _vpH), _imgW, _imgH);
+      });
+      _recordVelocitySample(event.position);
+    } else if (pointerCount == 1) {
+      // At 1× zoom: track movement for tap detection + dismiss drag.
+      _dragAccum += delta.distance;
+      final down = _downPos;
+      final downLocal = _downLocal;
+      if (!_dismissing && down != null && downLocal != null && !_dismissLocked) {
+        final total = event.position - down;
+        if (!_dismissDragging && total.distance > 12) {
+          // Lock in the gesture direction once past slop: vertical drag that
+          // started on the image = dismiss, anything else = page swipe / none.
+          if (_isOnImage(downLocal) && total.dy.abs() > total.dx.abs()) {
+            _dismissDragging = true;
+          } else {
+            _dismissLocked = true;
+          }
+        }
+        if (_dismissDragging && _dismissCtrl != null) {
+          _dismissCtrl!.value += delta.dy;
+          _recordVelocitySample(event.position);
+        }
+      }
+    }
+  }
+
+  void handlePointerUp(PointerUpEvent event) {
+    _pointerPositions.remove(event.pointer);
+    _previousPositions.remove(event.pointer);
+
+    if (_pointerPositions.length < 2) _pinchStartDist = null;
+
+    final wasSingle = _prevPointerCount == 1 && _pointerPositions.isEmpty;
+
+    // If a single finger was just lifted while zoomed, start fling.
+    if (wasSingle && _zoomScale > 1.0) {
+      final vel = _computePanVelocity();
+      if (vel.distance > 300) {
+        _startFling(vel.dx, vel.dy);
+      }
+    }
+
+    if (wasSingle && _zoomScale <= 1.0 + 0.01) {
+      if (_dismissDragging) {
+        _endDismissDrag(_computePanVelocity().dy);
+      } else if (!_dismissing &&
+          !_dismissLocked &&
+          _dragAccum < 12 &&
+          event.timeStamp - _downTime < const Duration(milliseconds: 400) &&
+          !_isOnImage(event.localPosition)) {
+        // Quick tap on the dark background outside the image → dismiss.
+        onTapOutsideImage?.call();
+      }
+    }
+
+    _dismissDragging = false;
+    _dismissLocked = false;
+    _prevPointerCount = _pointerPositions.length;
+
+    // Notify parent of any zoom state change.
+    if (_pointerPositions.isEmpty) {
+      onZoomChanged?.call(_zoomScale);
+    }
+  }
+
+  /// Whether [local] (page-local coords) falls inside the centered image rect.
+  bool _isOnImage(Offset local) {
+    final imgLeft = (_vpW - _imgW) / 2;
+    final imgTop = (_vpH - _imgH) / 2;
+    return local.dx >= imgLeft && local.dx <= imgLeft + _imgW && local.dy >= imgTop && local.dy <= imgTop + _imgH;
+  }
+
+  /// End of a dismiss drag: fling the image off-screen and pop, or spring back.
+  void _endDismissDrag(double velocity) {
+    final ctrl = _dismissCtrl;
+    if (_dismissing || ctrl == null) return;
+    final screenH = _vpH;
+    final offset = ctrl.value;
+
+    if (velocity.abs() > 800 || offset.abs() > screenH * 0.25) {
+      _dismissing = true;
+      // Use drag direction when fling velocity is negligible.
+      final dir = velocity.abs() > 50 ? velocity.sign : (offset.sign == 0 ? 1.0 : offset.sign);
+      ctrl.animateTo(dir * screenH * 1.5, duration: const Duration(milliseconds: 200), curve: Curves.easeIn).then((_) {
+        onDismissed?.call();
+      });
+    } else {
+      ctrl.animateWith(
+        SpringSimulation(const SpringDescription(mass: 1, stiffness: 600, damping: 50), offset, 0, velocity),
+      );
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Double‑tap zoom
+  // -----------------------------------------------------------------------
+
   void zoomOnDoubleTapDown(Offset tapPos, Size viewport, double iw, double ih) {
+    if (_animating) {
+      _cancelAnimation();
+      return;
+    }
     if (_zoomScale > 1.0 + 0.01) {
-      _zoomScale = 1.0;
-      _zoomOffset = Offset.zero;
+      _animateZoomTo(1.0, Offset.zero, viewport, iw, ih);
     } else {
       const targetScale = 2.5;
       final vpc = Offset(viewport.width / 2, viewport.height / 2);
-      _zoomOffset = (tapPos - vpc) + (_zoomOffset - (tapPos - vpc)) * (targetScale / _zoomScale);
-      _zoomScale = targetScale;
+      final targetOffset = (tapPos - vpc) + (_zoomOffset - (tapPos - vpc)) * (targetScale / _zoomScale);
+      _animateZoomTo(targetScale, targetOffset, viewport, iw, ih);
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // Fling / inertia
+  // -----------------------------------------------------------------------
+
+  void _startFling(double vx, double vy) {
+    _cancelFling();
+    final speed = Offset(vx, vy).distance;
+    if (speed < 50) return;
+
+    _flingVx = vx;
+    _flingVy = vy;
+    _flingId++;
+    final id = _flingId;
+    const friction = 0.92;
+
+    _flingTicker = createTicker((elapsed) {
+      if (_flingId != id || !mounted) {
+        _cancelFling();
+        return;
+      }
+      final speed = Offset(_flingVx, _flingVy).distance;
+      if (speed < 5) {
+        _cancelFling();
+        if (mounted) setState(() {});
+        return;
+      }
+      setState(() {
+        _zoomOffset += Offset(_flingVx / 60, _flingVy / 60);
+        _flingVx *= friction;
+        _flingVy *= friction;
+        _zoomClampPosition(Size(_vpW, _vpH), _imgW, _imgH);
+        onZoomChanged?.call(_zoomScale);
+      });
+    });
+    _flingTicker!.start();
+  }
+
+  void _cancelFling() {
+    _flingTicker?.stop();
+    _flingTicker?.dispose();
+    _flingTicker = null;
+    _flingVx = 0;
+    _flingVy = 0;
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal helpers
+  // -----------------------------------------------------------------------
+
+  double _distanceBetweenPoints() {
+    final positions = _pointerPositions.values.toList();
+    if (positions.length < 2) return 0;
+    return (positions[0] - positions[1]).distance;
+  }
+
+  void _recordVelocitySample(Offset position) {
+    final now = DateTime.now().microsecondsSinceEpoch;
+    _velocitySamples.add(_VelocitySample(now, position));
+    while (_velocitySamples.length > _maxVelocitySamples) {
+      _velocitySamples.removeAt(0);
+    }
+  }
+
+  Offset _computePanVelocity() {
+    if (_velocitySamples.length < 2) return Offset.zero;
+    final first = _velocitySamples.first;
+    final last = _velocitySamples.last;
+    final dt = (last.timeUs - first.timeUs) / 1000000.0;
+    if (dt <= 0) return Offset.zero;
+    return (last.position - first.position) / dt;
+  }
+
+  void _cancelAnimation() {
+    if (_animating && _animController != null) {
+      _animController!.stop();
+      _animating = false;
+    }
+  }
+
+  /// Smoothly animate zoom/pan to [targetScale] / [targetOffset].
+  void _animateZoomTo(double targetScale, Offset targetOffset, Size viewport, double iw, double ih) {
+    if (_animController == null) return;
+    _cancelAnimation();
+
+    // Clamp the target first.
+    final savedScale = _zoomScale;
+    final savedOffset = _zoomOffset;
+    _zoomScale = targetScale;
+    _zoomOffset = targetOffset;
     _zoomClampPosition(viewport, iw, ih);
+    final clampedScale = _zoomScale;
+    final clampedOffset = _zoomOffset;
+    _zoomScale = savedScale;
+    _zoomOffset = savedOffset;
+
+    final begin = buildZoomTransform(viewport.width, viewport.height, iw, ih);
+
+    _zoomScale = clampedScale;
+    _zoomOffset = clampedOffset;
+    final end = buildZoomTransform(viewport.width, viewport.height, iw, ih);
+    _zoomScale = savedScale;
+    _zoomOffset = savedOffset;
+
+    final tween = Matrix4Tween(begin: begin, end: end);
+    final anim = tween.animate(CurvedAnimation(parent: _animController!, curve: Curves.easeOut));
+    final currentAnimId = ++_animId;
+
+    _animating = true;
+    anim.addListener(() {
+      if (_animId != currentAnimId) return;
+      setState(() {
+        _zoomScale = anim.value.getMaxScaleOnAxis();
+        _zoomOffset = Offset(anim.value.getTranslation().x, anim.value.getTranslation().y);
+        _zoomClampPosition(viewport, iw, ih);
+      });
+    });
+
+    _animController!.addStatusListener((status) {
+      if (_animId != currentAnimId) return;
+      if (status == AnimationStatus.completed) {
+        _animating = false;
+        onZoomChanged?.call(_zoomScale);
+      }
+    });
+
+    _animController!.forward(from: 0);
+  }
+
+  /// Trigger [HapticFeedback.mediumImpact] when hitting a zoom limit.
+  void _checkHaptic(double oldScale, double newScale) {
+    if (oldScale == newScale) return;
+    if ((newScale == 1.0 && oldScale != 1.0) || (newScale == 5.0 && oldScale != 5.0)) {
+      HapticFeedback.mediumImpact();
+    }
   }
 
   /// Clamp [zoomOffset] so the image stays within the viewport.
@@ -274,6 +635,37 @@ mixin _ZoomableMixin<T extends StatefulWidget> on State<T> {
   }
 }
 
+/// Timestamped position sample used to compute pan velocity for fling.
+class _VelocitySample {
+  final int timeUs;
+  final Offset position;
+  const _VelocitySample(this.timeUs, this.position);
+}
+
+// =============================================================================
+// _ZoomReporter — InheritedWidget that carries the onZoomChanged callback
+// down to each page so it can toggle PageView physics.
+// =============================================================================
+
+class _ZoomReporter extends InheritedWidget {
+  final ValueChanged<double> onZoomChanged;
+  final ValueChanged<double> onDismissProgress;
+
+  const _ZoomReporter({
+    required this.onZoomChanged,
+    required this.onDismissProgress,
+    required super.child,
+  });
+
+  static _ZoomReporter? maybeOf(BuildContext context) {
+    return context.dependOnInheritedWidgetOfExactType<_ZoomReporter>();
+  }
+
+  @override
+  bool updateShouldNotify(_ZoomReporter old) =>
+      onZoomChanged != old.onZoomChanged || onDismissProgress != old.onDismissProgress;
+}
+
 // =============================================================================
 // FullscreenPageViewInner — the shared route page
 // =============================================================================
@@ -302,6 +694,28 @@ class _FullscreenPageViewInner extends StatefulWidget {
 }
 
 class _FullscreenPageViewInnerState extends State<_FullscreenPageViewInner> {
+  /// Toggled between [PageScrollPhysics] and [NeverScrollableScrollPhysics]
+  /// based on whether the current page is zoomed beyond 1×.
+  ScrollPhysics _pagePhysics = const PageScrollPhysics();
+
+  /// Backdrop opacity (1 = fully dimmed). Fades as the image is dragged away.
+  double _bgOpacity = 1.0;
+
+  void _onPageZoomChanged(double scale) {
+    setState(() {
+      _pagePhysics = scale > 1.0 ? const NeverScrollableScrollPhysics() : const PageScrollPhysics();
+    });
+  }
+
+  void _onPageChanged(int index) {
+    widget.currentIndex.value = index;
+    setState(() => _pagePhysics = const PageScrollPhysics());
+  }
+
+  void _onDismissProgress(double progress) {
+    setState(() => _bgOpacity = 1.0 - progress);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Material(
@@ -319,82 +733,90 @@ class _FullscreenPageViewInnerState extends State<_FullscreenPageViewInner> {
               Navigator.of(context).pop();
           }
         },
-        child: GestureDetector(
-          onTap: () => Navigator.of(context).pop(),
-          behavior: HitTestBehavior.translucent,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // ---- PageView ----
-              SignalBuilder(
-                builder: (context) {
-                  return PageView.builder(
-                    controller: widget.pageController,
-                    itemCount: widget.itemCount,
-                    onPageChanged: (i) => widget.currentIndex.value = i,
-                    itemBuilder: widget.pageBuilder,
-                  );
-                },
+        child: _buildContent(context),
+      ),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // ---- Backdrop (fades as the image is dragged away) ----
+        Container(color: Colors.black.withValues(alpha: 0.87 * _bgOpacity)),
+
+        // ---- PageView ----
+        SignalBuilder(
+          builder: (context) {
+            return _ZoomReporter(
+              onZoomChanged: _onPageZoomChanged,
+              onDismissProgress: _onDismissProgress,
+              child: PageView.builder(
+                controller: widget.pageController,
+                physics: _pagePhysics,
+                itemCount: widget.itemCount,
+                onPageChanged: _onPageChanged,
+                itemBuilder: widget.pageBuilder,
               ),
+            );
+          },
+        ),
 
-              // ---- Nav arrows ----
-              if (widget.itemCount > 1) ...[
-                Positioned(
-                  left: 16,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: SignalBuilder(
-                      builder: (context) => _NavArrow(
-                        icon: Icons.chevron_left,
-                        visible: widget.currentIndex.value > 0,
-                        onTap: () => widget.onGoTo(widget.currentIndex.value - 1),
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 16,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: SignalBuilder(
-                      builder: (context) => _NavArrow(
-                        icon: Icons.chevron_right,
-                        visible: widget.currentIndex.value < widget.itemCount - 1,
-                        onTap: () => widget.onGoTo(widget.currentIndex.value + 1),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-
-              // ---- Page counter overlay ----
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 32,
-                child: SignalBuilder(
-                  builder: (context) {
-                    final label = widget.subtitle != null ? '${widget.subtitle} — ' : '';
-                    return Text(
-                      '$label${widget.currentIndex.value + 1} / ${widget.itemCount}',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.7),
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                        decoration: TextDecoration.none,
-                      ),
-                    );
-                  },
+        // ---- Nav arrows ----
+        if (widget.itemCount > 1) ...[
+          Positioned(
+            left: 16,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: SignalBuilder(
+                builder: (context) => _NavArrow(
+                  icon: Icons.chevron_left,
+                  visible: widget.currentIndex.value > 0,
+                  onTap: () => widget.onGoTo(widget.currentIndex.value - 1),
                 ),
               ),
-            ],
+            ),
+          ),
+          Positioned(
+            right: 16,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: SignalBuilder(
+                builder: (context) => _NavArrow(
+                  icon: Icons.chevron_right,
+                  visible: widget.currentIndex.value < widget.itemCount - 1,
+                  onTap: () => widget.onGoTo(widget.currentIndex.value + 1),
+                ),
+              ),
+            ),
+          ),
+        ],
+
+        // ---- Page counter overlay ----
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 32,
+          child: SignalBuilder(
+            builder: (context) {
+              final label = widget.subtitle != null ? '${widget.subtitle} — ' : '';
+              return Text(
+                '$label${widget.currentIndex.value + 1} / ${widget.itemCount}',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  decoration: TextDecoration.none,
+                ),
+              );
+            },
           ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -415,7 +837,7 @@ class _FullscreenPage extends StatefulWidget {
   State<_FullscreenPage> createState() => _FullscreenPageState();
 }
 
-class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_FullscreenPage> {
+class _FullscreenPageState extends State<_FullscreenPage> with TickerProviderStateMixin, _ZoomableMixin<_FullscreenPage> {
   /// Cached image provider — same instance across rebuilds prevents
   /// re-resolving the image on every build.
   late final ImageProvider _imageProvider;
@@ -439,6 +861,13 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
   @override
   void initState() {
     super.initState();
+    initZoomAnimation(this);
+    onTapOutsideImage = () {
+      if (mounted) Navigator.of(context).pop();
+    };
+    onDismissed = () {
+      if (mounted) Navigator.of(context).pop();
+    };
     _imageProvider = KemonoImageProvider(widget.url, creatorId: widget.creatorId, postId: widget.postId);
     _loadThumbnail();
   }
@@ -446,10 +875,24 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final reporter = _ZoomReporter.maybeOf(context);
+    if (reporter != null) {
+      onZoomChanged = reporter.onZoomChanged;
+      onDismissProgress = reporter.onDismissProgress;
+    }
     if (!_resolved) {
       _resolved = true;
       _resolveImage();
     }
+  }
+
+  @override
+  void dispose() {
+    disposeZoomAnimation();
+    if (_imageStream != null && _imageListener != null) {
+      _imageStream!.removeListener(_imageListener!);
+    }
+    super.dispose();
   }
 
   void _resolveImage() {
@@ -479,22 +922,14 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
     _imageListener = listener;
   }
 
-  @override
-  void dispose() {
-    if (_imageStream != null && _imageListener != null) {
-      _imageStream!.removeListener(_imageListener!);
-    }
-    super.dispose();
-  }
-
   Future<void> _loadThumbnail() async {
     try {
       final fileInfo = await ImageCacheService.instance.cache.getFileFromCache(widget.thumbUrl);
       if (fileInfo != null && mounted) {
         setState(() => _thumbnailFile = fileInfo.file);
       }
-    } catch (_) {
-      // Non-critical — skeleton appears without blur.
+    } catch (e, st) {
+      debugPrint('FullscreenImageViewer: thumbnail load failed: $e\n$st');
     }
   }
 
@@ -504,9 +939,9 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          spacing: 8,
           children: [
             Icon(Icons.broken_image_outlined, color: Colors.white.withValues(alpha: 0.4), size: 48),
-            const SizedBox(height: 8),
             Text('Image unavailable', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 14)),
           ],
         ),
@@ -524,73 +959,82 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
         final ratio = meta?.aspectRatio ?? _aspectRatio ?? 1.0;
         final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
 
+        // Stash for raw-pointer handlers.
+        _vpW = vw;
+        _vpH = vh;
+        _imgW = iw;
+        _imgH = ih;
+
         return SizedBox(
           width: vw,
           height: vh,
           child: Listener(
+            // Opaque so pointer events land here across the whole viewport —
+            // the child chain is only hittable on the image itself, which
+            // would swallow background taps/drags before they reach us.
+            behavior: HitTestBehavior.opaque,
             onPointerSignal: (event) {
               if (event is PointerScrollEvent && _imageInfo != null && _hasLoaded) {
                 setState(() => zoomOnScroll(event.scrollDelta.dy, event.localPosition, Size(vw, vh), iw, ih));
               }
             },
+            onPointerDown: handlePointerDown,
+            onPointerMove: handlePointerMove,
+            onPointerUp: handlePointerUp,
             child: GestureDetector(
-              onScaleStart: zoomOnScaleStart,
-              onScaleUpdate: (details) {
-                if (_imageInfo != null) {
-                  setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
-                }
-              },
               onDoubleTapDown: (details) {
                 if (_imageInfo != null && _hasLoaded) {
                   setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
                 }
               },
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // ---- Skeleton (behind the image) ----
-                  if (!_fadeCompleted)
-                    Center(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(15),
-                        child: SizedBox(width: iw, height: ih, child: _buildSkeletonContent(iw, ih)),
-                      ),
-                    ),
+              child: Transform.translate(
+                offset: Offset(0, dismissOffset),
+                child: Transform.scale(
+                  scale: 1.0 - dismissProgress * 0.15,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // ---- Skeleton (always behind the image) ----
+                      if (!_fadeCompleted)
+                        Center(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(15),
+                            child: SizedBox(width: iw, height: ih, child: _buildSkeletonContent(iw, ih)),
+                          ),
+                        ),
 
-                  // ---- Zoomable image (fades in over skeleton) ----
-                  // Always present so AnimatedOpacity's state persists across the
-                  // _hasLoaded transition.  Child is SizedBox.shrink() until the
-                  // image resolves, then swaps to the zoomable RawImage.
-                  AnimatedOpacity(
-                    opacity: _hasLoaded ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 300),
-                    onEnd: () {
-                      if (_hasLoaded && mounted) {
-                        setState(() => _fadeCompleted = true);
-                      }
-                    },
-                    child: _imageInfo != null
-                        ? Center(
-                            child: Transform(
-                              transform: buildZoomTransform(vw, vh, iw, ih),
-                              alignment: Alignment.center,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(15),
-                                child: SizedBox(
-                                  width: iw,
-                                  height: ih,
-                                  child: RawImage(
-                                    image: _imageInfo!.image,
-                                    fit: BoxFit.contain,
-                                    isAntiAlias: true,
+                      // ---- Zoomable image (fades in over skeleton) ----
+                      // Always present so AnimatedOpacity's state persists across the
+                      // _hasLoaded transition.  Child is SizedBox.shrink() until the
+                      // image resolves, then swaps to the zoomable RawImage.
+                      AnimatedOpacity(
+                        opacity: _hasLoaded ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 300),
+                        onEnd: () {
+                          if (_hasLoaded && mounted) {
+                            setState(() => _fadeCompleted = true);
+                          }
+                        },
+                        child: _imageInfo != null
+                            ? Center(
+                                child: Transform(
+                                  transform: buildZoomTransform(vw, vh, iw, ih),
+                                  alignment: Alignment.center,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(15),
+                                    child: SizedBox(
+                                      width: iw,
+                                      height: ih,
+                                      child: RawImage(image: _imageInfo!.image, fit: BoxFit.contain, isAntiAlias: true),
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ),
-                          )
-                        : const SizedBox.shrink(),
+                              )
+                            : const SizedBox.shrink(),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -605,12 +1049,9 @@ class _FullscreenPageState extends State<_FullscreenPage> with _ZoomableMixin<_F
     return Stack(
       alignment: Alignment.center,
       children: [
-        // Background: blurred cached thumbnail or dark container.
+        // Background: cached thumbnail while full-res loads.
         if (_thumbnailFile != null)
-          ImageFiltered(
-            imageFilter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Image.file(_thumbnailFile!, width: w, height: h, fit: BoxFit.contain),
-          )
+          Image.file(_thumbnailFile!, width: w, height: h, fit: BoxFit.contain)
         else
           Container(
             width: w,
@@ -676,7 +1117,7 @@ class _ArchivePage extends StatefulWidget {
   State<_ArchivePage> createState() => _ArchivePageState();
 }
 
-class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_ArchivePage> {
+class _ArchivePageState extends State<_ArchivePage> with TickerProviderStateMixin, _ZoomableMixin<_ArchivePage> {
   Uint8List? _data;
   bool _errored = false;
   double? _aspectRatio;
@@ -684,7 +1125,30 @@ class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_Archive
   @override
   void initState() {
     super.initState();
+    initZoomAnimation(this);
+    onTapOutsideImage = () {
+      if (mounted) Navigator.of(context).pop();
+    };
+    onDismissed = () {
+      if (mounted) Navigator.of(context).pop();
+    };
     _load();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reporter = _ZoomReporter.maybeOf(context);
+    if (reporter != null) {
+      onZoomChanged = reporter.onZoomChanged;
+      onDismissProgress = reporter.onDismissProgress;
+    }
+  }
+
+  @override
+  void dispose() {
+    disposeZoomAnimation();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -701,7 +1165,8 @@ class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_Archive
         ar = img.width / img.height;
         img.dispose();
         codec.dispose();
-      } catch (_) {
+      } catch (e, st) {
+        debugPrint('ArchivePage: codec decode failed for ${widget.entryPath}: $e\n$st');
         // Fallback: use 1:1 ratio.
         ar = null;
       }
@@ -710,8 +1175,8 @@ class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_Archive
         _data = data;
         _aspectRatio = ar;
       });
-    } catch (e) {
-      debugPrint('ArchivePage load error for ${widget.entryPath}:\n$e');
+    } catch (e, st) {
+      debugPrint('ArchivePage load error for ${widget.entryPath}:\n$e\n$st');
       if (mounted) setState(() => _errored = true);
     }
   }
@@ -722,9 +1187,9 @@ class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_Archive
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          spacing: 8,
           children: [
             Icon(Icons.broken_image_outlined, color: Colors.white.withValues(alpha: 0.4), size: 48),
-            const SizedBox(height: 8),
             Text(p.basename(widget.entryPath), style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 14)),
           ],
         ),
@@ -748,42 +1213,54 @@ class _ArchivePageState extends State<_ArchivePage> with _ZoomableMixin<_Archive
         final ratio = _aspectRatio ?? 1.0;
         final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
 
+        // Stash for raw-pointer handlers.
+        _vpW = vw;
+        _vpH = vh;
+        _imgW = iw;
+        _imgH = ih;
+
         return SizedBox(
           width: vw,
           height: vh,
           child: Listener(
+            behavior: HitTestBehavior.opaque,
             onPointerSignal: (event) {
               if (event is PointerScrollEvent) {
                 setState(() => zoomOnScroll(event.scrollDelta.dy, event.localPosition, Size(vw, vh), iw, ih));
               }
             },
+            onPointerDown: handlePointerDown,
+            onPointerMove: handlePointerMove,
+            onPointerUp: handlePointerUp,
             child: GestureDetector(
-              onScaleStart: zoomOnScaleStart,
-              onScaleUpdate: (details) {
-                setState(() => zoomOnScaleUpdate(details, Size(vw, vh), iw, ih));
-              },
               onDoubleTapDown: (details) {
                 setState(() => zoomOnDoubleTapDown(details.localPosition, Size(vw, vh), iw, ih));
               },
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // Zoomable image.
-                  Center(
-                    child: Transform(
-                      transform: buildZoomTransform(vw, vh, iw, ih),
-                      alignment: Alignment.center,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(15),
-                        child: SizedBox(
-                          width: iw,
-                          height: ih,
-                          child: Image.memory(_data!, fit: BoxFit.contain, filterQuality: FilterQuality.high),
+              child: Transform.translate(
+                offset: Offset(0, dismissOffset),
+                child: Transform.scale(
+                  scale: 1.0 - dismissProgress * 0.15,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Zoomable image.
+                      Center(
+                        child: Transform(
+                          transform: buildZoomTransform(vw, vh, iw, ih),
+                          alignment: Alignment.center,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(15),
+                            child: SizedBox(
+                              width: iw,
+                              height: ih,
+                              child: Image.memory(_data!, fit: BoxFit.contain, filterQuality: FilterQuality.high),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),

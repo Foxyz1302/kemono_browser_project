@@ -51,8 +51,9 @@ class _ArchiveBrowserDialogState extends State<ArchiveBrowserDialog> {
         _entries = entries.map((e) => e.path).toList();
         _state = _ArchiveState.ready;
       });
-    } catch (e) {
+    } catch (e, st) {
       if (!mounted) return;
+      debugPrint('ArchiveBrowserDialog: failed to open ${widget.archiveUrl}: $e\n$st');
       setState(() {
         _error = e.toString();
         _state = _ArchiveState.error;
@@ -144,9 +145,9 @@ class _ArchiveBrowserDialogState extends State<ArchiveBrowserDialog> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
           child: Row(
+            spacing: 8,
             children: [
               const Icon(Icons.folder_zip, size: 20),
-              const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   widget.archiveName,

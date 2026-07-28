@@ -25,12 +25,22 @@ Every feature is developed through unit and/or integration tests. Tests are only
 | **HTTP** | `dio` |
 | **Image loading** | Custom `ImageProvider` (Dio + `flutter_cache_manager` with custom `DioFileService`) |
 | **Serialization** | `dart_mappable` |
-| **ZIP extraction** | `archive` |
+| **ZIP extraction** | `koni_archive` |
 | **HTML rendering** | `flutter_widget_from_html` |
 | **Settings** | `hive_ce` (saved credentials, UI prefs only — NOT favorites data) |
 | **Lints** | `flutter_lints: ^6.0.0` |
 | **Build runner** | `build_runner: ^2.4.0` |
 | **Favorites state** | Pure filesystem (no database) |
+| **Cookie management** | `dio_cookie_manager` + `cookie_jar` |
+| **Storage paths** | `path_provider` |
+| **Hive adapter** | `hive_ce_flutter` |
+| **Link handling** | `url_launcher` |
+| **Clipboard** | `pasteboard` |
+| **Sticky headers** | `persistent_header_adaptive` |
+| **Dropdown** | `dropdown_button2` |
+| **Visibility** | `visibility_detector` |
+| **Dev: File ops** | `file` |
+| **Dev: Code gen** | `dart_mappable_builder` + `hive_ce_generator` |
 
 ## Conventions
 
@@ -67,7 +77,7 @@ POST /account/login
   → Set-Cookie: session=<Flask signed cookie>
 ```
 
-- Cookie persisted via `dio_cookie_jar` + `persist_cookie_jar` (survives app restart)
+- Cookie persisted via `dio_cookie_manager` + `cookie_jar` (survives app restart)
 - Login screen: username + password fields, call POST, check for redirect
 - No OAuth, no token refresh — cookie just works until server expiry
 - Credentials saved in hive_ce for auto-login on cold start
@@ -201,6 +211,10 @@ lib/
       pawchive_client.dart          # Dio-based API client (singleton or static methods)
       models.dart                   # dart_mappable: Post, Creator, FavoriteCreator, FileInfo
       models.mapper.dart            # (generated)
+      creator_store.dart            # Persistent 89K-creator index (line-delimited JSON)
+    archive/
+      archive_cache.dart            # LRU cache for downloaded archives (max 10, JSON manifest)
+      archive_service.dart          # Dio + koni_archive: download, list, extract entries
     cache/
       kemono_image_provider.dart    # Custom ImageProvider (extends ImageProvider)
       image_cache_service.dart      # Singleton wrapping flutter_cache_manager
@@ -214,9 +228,13 @@ lib/
       home_screen.dart              # CreatorTile grid with search, sort, cache badges
       creator_posts_screen.dart     # Single creator's posts (attachment carousel, PostDetailDialog)
       image_viewer_screen.dart      # Full-size image viewer (PageView, progress skeleton, desktop nav)
+      fullscreen_image_viewer_screen.dart # Archive-image viewer (InteractiveViewer, AppBar)
+      archive_browser_screen.dart   # Browse extracted archive files (grid/list)
       login_screen.dart             # Username + password, saves credentials to hive_ce
     widgets/
-      (none yet — planned: post_tile, creator_tile, archive_browser)
+      context_menu.dart             # FContextMenu — Material-styled right-click/long-press menu
+      popover.dart                  # FPopover — anchored overlay popover (OverlayPortal)
+      search_bar.dart               # Debounced search bar with signals integration
 ```
 
 ## Pawchive API (Kemono v1 format)
@@ -285,16 +303,8 @@ origin: String?
 content: String?       // full HTML body
 embed: Map?
 tags: String?          // "{Tag1,Tag2}" format
-shared_file: bool?
 added: String?         // ISO 8601
 edited: String?
-poll: Map?
-captions: List?
-preview_attempts: int?
-detail_fetched: bool?
-import_size_cap_gb: int?
-next: Map?
-prev: Map?
 
 // FileInfo
 name: String?          // nullable — some attachments have no name
@@ -310,17 +320,12 @@ ever_imported: bool
 last_imported: String? // ISO 8601
 kemono_favorited: int
 
-// Local-only (filesystem _meta.json)
-FavoritedCreatorMeta {
-  favoritedAt: String
-  lastChecked: String?   // ISO 8601
-}
-
-FavoritedPostMeta {
-  viewedAt: String?
-  archived: bool
-  notes: String
-}
+// Local-only (filesystem _meta.json — raw JSON maps, no Dart class)
+// Creator _meta.json:
+//   {name, service, favoritedAt (ISO 8601), lastChecked (ISO 8601)?}
+//
+// Post _meta.json:
+//   {title, published (ISO 8601), viewedAt (ISO 8601)?, archived (bool), notes (String)}
 ```
 
 ## Key Behaviors

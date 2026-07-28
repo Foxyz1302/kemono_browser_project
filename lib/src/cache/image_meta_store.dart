@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:signals/signals.dart';
+import 'package:signals/signals_flutter.dart';
 
 import '../api/models.dart';
 import 'image_size_parser.dart';
@@ -123,7 +123,8 @@ class ImageMetaStore {
       frame.image.dispose();
       codec.dispose();
       return dims;
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('ImageMetaStore: codec decode failed for ${file.path}: $e\n$st');
       return null;
     }
   }

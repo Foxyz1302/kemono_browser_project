@@ -6,13 +6,15 @@ import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
+import 'package:kemono_browser_project/src/widgets/popover.dart';
 import 'package:kemono_browser_project/src/widgets/search_bar.dart';
 import 'package:persistent_header_adaptive/persistent_header_adaptive.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:signals/signals_flutter.dart';
 
 import '../state/app_state.dart';
 import '../state/auth_state.dart';
 import 'creator_posts_screen.dart';
+import 'login_screen.dart';
 
 const serviceColors = <String, Color>{
   'patreon': Color(0xFFFF424D),
@@ -47,11 +49,224 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _app = AppState.instance;
+  final _filterCtrl = FPopoverController();
+  final _mobileOverflowCtrl = FPopoverController();
+  final _settingsCtrl = FPopoverController();
 
   @override
   void initState() {
     super.initState();
     _app.loadCreators();
+  }
+
+  Widget _buildDesktopLayout(BuildContext context) {
+    return Row(
+      spacing: 6,
+      children: [
+        Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(15),
+          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Text('Kemono', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+        ),
+        Expanded(
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(15),
+            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+              child: Row(
+                spacing: 4,
+                children: [
+                  Expanded(
+                    child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+                  ),
+                  SignalBuilder(
+                    builder: (context) {
+                      final asc = _app.sortAscending.value;
+                      return IconButton(
+                        icon: Icon(asc ? Icons.arrow_upward : Icons.arrow_downward, size: 20),
+                        tooltip: asc ? 'Ascending' : 'Descending',
+                        onPressed: () => _app.sortAscending.value = !asc,
+                        visualDensity: VisualDensity.compact,
+                        style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+                      );
+                    },
+                  ),
+                  SignalBuilder(
+                    builder: (context) {
+                      return DropdownButton<SortBy>(
+                        value: _app.sortBy.value,
+                        underline: const SizedBox.shrink(),
+                        borderRadius: BorderRadius.circular(15),
+                        elevation: 12,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        icon: const Icon(Icons.arrow_drop_down, size: 20),
+                        style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+                        items: SortBy.values.map((s) => DropdownMenuItem(value: s, child: Text(s.label))).toList(),
+                        onChanged: (v) {
+                          if (v != null) _app.sortBy.value = v;
+                        },
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(15),
+          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+          child: FPopover(
+            controller: _filterCtrl,
+            childAnchor: Alignment.bottomRight,
+            popoverAnchor: Alignment.topRight,
+            spacing: 6,
+            popoverBuilder: (context, _) => _FilterPopoverContent(),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 2),
+              child: IconButton(
+                icon: Icon(_app.showCachedOnly.value ? Icons.filter_alt : Icons.filter_alt_outlined, size: 20),
+                tooltip: 'Filters',
+                onPressed: () => _filterCtrl.toggle(),
+                visualDensity: VisualDensity.compact,
+                style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
+          ),
+        ),
+        Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(15),
+          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+          child: FPopover(
+            controller: _settingsCtrl,
+            childAnchor: Alignment.bottomRight,
+            popoverAnchor: Alignment.topRight,
+            spacing: 6,
+            popoverBuilder: (context, _) => _SettingsPopoverContent(),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 2),
+              child: IconButton(
+                icon: const Icon(Icons.settings, size: 20),
+                tooltip: 'Settings',
+                onPressed: () => _settingsCtrl.toggle(),
+                visualDensity: VisualDensity.compact,
+                style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
+          ),
+        ),
+        SignalBuilder(
+          builder: (context) {
+            final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
+            return Material(
+              elevation: 4,
+              borderRadius: BorderRadius.circular(15),
+              color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 2),
+                child: IconButton(
+                  icon: Icon(loggedIn ? Icons.logout : Icons.login),
+                  tooltip: loggedIn ? 'Logout' : 'Sign in',
+                  onPressed: loggedIn
+                      ? () => AuthState.instance.logout()
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const LoginScreen()),
+                          ),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMobileLayout(BuildContext context) {
+    return Row(
+      spacing: 6,
+      children: [
+        Expanded(
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(15),
+            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+              child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+            ),
+          ),
+        ),
+        Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(15),
+          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+          child: FPopover(
+            controller: _mobileOverflowCtrl,
+            childAnchor: Alignment.bottomRight,
+            popoverAnchor: Alignment.topRight,
+            spacing: 6,
+            popoverBuilder: (context, _) => _MobileSortFilterContent(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Icon(Icons.tune, size: 20),
+            ),
+          ),
+        ),
+        Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(15),
+          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+          child: FPopover(
+            controller: _settingsCtrl,
+            childAnchor: Alignment.bottomRight,
+            popoverAnchor: Alignment.topRight,
+            spacing: 6,
+            popoverBuilder: (context, _) => _SettingsPopoverContent(),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 2),
+              child: IconButton(
+                icon: const Icon(Icons.settings, size: 20),
+                tooltip: 'Settings',
+                onPressed: () => _settingsCtrl.toggle(),
+                visualDensity: VisualDensity.compact,
+                style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
+          ),
+        ),
+        SignalBuilder(
+          builder: (context) {
+            final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
+            return Material(
+              elevation: 4,
+              borderRadius: BorderRadius.circular(15),
+              color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 2),
+                child: IconButton(
+                  icon: Icon(loggedIn ? Icons.logout : Icons.login),
+                  tooltip: loggedIn ? 'Logout' : 'Sign in',
+                  onPressed: loggedIn
+                      ? () => AuthState.instance.logout()
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const LoginScreen()),
+                          ),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
   }
 
   @override
@@ -66,100 +281,36 @@ class _HomeScreenState extends State<HomeScreen> {
             return Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                spacing: 12,
                 children: [
                   Text('Error: ${_app.creatorsError.value}'),
-                  const SizedBox(height: 12),
                   FilledButton(onPressed: () => _app.loadCreators(refresh: true), child: const Text('Retry')),
                 ],
               ),
             );
           }
-          final creators = _app.filteredCreators;
+          final creators = _app.filteredCreators.value;
           return CustomScrollView(
             slivers: [
               AdaptiveHeightSliverPersistentHeader(
                 floating: true,
                 pinned: true,
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 900),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                      child: Row(
-                        children: [
-                          Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(15),
-                            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-                            child: const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              child: Text(
-                                'Kemono',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Material(
-                              elevation: 4,
-                              borderRadius: BorderRadius.circular(15),
-                              color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    SignalBuilder(
-                                      builder: (context) {
-                                        final asc = _app.sortAscending.value;
-                                        return IconButton(
-                                          icon: Icon(asc ? Icons.arrow_upward : Icons.arrow_downward, size: 20),
-                                          tooltip: asc ? 'Ascending' : 'Descending',
-                                          onPressed: () => _app.sortAscending.value = !asc,
-                                          visualDensity: VisualDensity.compact,
-                                          style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
-                                        );
-                                      },
-                                    ),
-                                    SignalBuilder(
-                                      builder: (context) {
-                                        return DropdownButton<SortBy>(
-                                          value: _app.sortBy.value,
-                                          underline: const SizedBox.shrink(),
-                                          icon: const Icon(Icons.arrow_drop_down, size: 20),
-                                          style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
-                                          items: SortBy.values.map((s) => DropdownMenuItem(value: s, child: Text(s.label))).toList(),
-                                          onChanged: (v) {
-                                            if (v != null) _app.sortBy.value = v;
-                                          },
-                                        );
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(15),
-                            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-                            child: Padding(
-                              padding: const EdgeInsets.only(left: 2),
-                              child: IconButton(
-                                icon: const Icon(Icons.logout),
-                                tooltip: 'Logout',
-                                onPressed: () => AuthState.instance.logout(),
-                              ),
-                            ),
-                          ),
-                        ],
+                child: SafeArea(
+                  top: true,
+                  bottom: false,
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 900),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            if (constraints.maxWidth < 560) {
+                              return _buildMobileLayout(context);
+                            }
+                            return _buildDesktopLayout(context);
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -350,6 +501,7 @@ class CreatorTile extends StatelessWidget {
             right: 90,
             child: IgnorePointer(
               child: Row(
+                spacing: 10,
                 children: [
                   ClipOval(
                     child: Container(
@@ -363,13 +515,12 @@ class CreatorTile extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
+                      spacing: 4,
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const SizedBox(height: 4),
                         Text(
                           creator.name,
                           style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
@@ -410,7 +561,11 @@ class CreatorTile extends StatelessWidget {
             child: IgnorePointer(
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: heatColorCorrect(diff).withValues(alpha: 0.5), borderRadius: BorderRadius.circular(4)),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  border: .fromLTRB(left: BorderSide(color: heatColorCorrect(diff), width: 3)),
+                  borderRadius: BorderRadius.circular(4),
+                ),
                 child: Text(_timeAgo(creator.updated), style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10)),
               ),
             ),
@@ -488,6 +643,7 @@ class CreatorCacheDialog extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                   child: Row(
+                    spacing: 8,
                     children: [
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -497,7 +653,6 @@ class CreatorCacheDialog extends StatelessWidget {
                           style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
                         ),
                       ),
-                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           creator.name,
@@ -514,9 +669,9 @@ class CreatorCacheDialog extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   child: Row(
+                    spacing: 8,
                     children: [
                       Icon(Icons.storage, size: 16, color: Theme.of(context).colorScheme.outline),
-                      const SizedBox(width: 8),
                       Text(
                         '$files files · ${ImageMetaStore.formatBytes(bytes)}',
                         style: TextStyle(color: Theme.of(context).colorScheme.outline, fontSize: 13),
@@ -538,7 +693,7 @@ class CreatorCacheDialog extends StatelessWidget {
                       shrinkWrap: true,
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       itemCount: posts.length,
-                      separatorBuilder: (_, _2) => const Divider(height: 1),
+                      separatorBuilder: (_, _) => const Divider(height: 1),
                       itemBuilder: (context, i) {
                         final p = posts[i];
                         return ListTile(
@@ -610,5 +765,239 @@ class CreatorCacheDialog extends StatelessWidget {
         SnackBar(content: Text('Cleared ${freed.length} files · ${ImageMetaStore.formatBytes(freed.values.fold(0, (a, b) => a + b))}')),
       );
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _MobileSortFilterContent
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _MobileSortFilterContent extends StatelessWidget {
+  _MobileSortFilterContent();
+
+  final _app = AppState.instance;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final text = theme.textTheme;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      color: cs.surfaceContainerHighest,
+      surfaceTintColor: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      child: IntrinsicWidth(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              child: Text('Sort', style: text.labelSmall?.copyWith(color: cs.outline)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: SignalBuilder(
+                builder: (context) {
+                  return DropdownButton<SortBy>(
+                    value: _app.sortBy.value,
+                    underline: const SizedBox.shrink(),
+                    borderRadius: BorderRadius.circular(15),
+                    elevation: 12,
+                    isExpanded: true,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                    dropdownColor: cs.surfaceContainerHigh,
+                    items: SortBy.values.map((s) => DropdownMenuItem(value: s, child: Text(s.label))).toList(),
+                    onChanged: (v) {
+                      if (v != null) _app.sortBy.value = v;
+                    },
+                  );
+                },
+              ),
+            ),
+            SignalBuilder(
+              builder: (context) {
+                final asc = _app.sortAscending.value;
+                return _FilterToggle(
+                  icon: asc ? Icons.arrow_upward : Icons.arrow_downward,
+                  label: asc ? 'Ascending' : 'Descending',
+                  value: asc,
+                  onChanged: (v) => _app.sortAscending.value = v,
+                );
+              },
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+              child: Text('Filter', style: text.labelSmall?.copyWith(color: cs.outline)),
+            ),
+            SignalBuilder(
+              builder: (context) {
+                final active = _app.showCachedOnly.value;
+                return _FilterToggle(
+                  icon: Icons.storage,
+                  label: 'Has cached files',
+                  subtitle: 'Show only creators with cached images',
+                  value: active,
+                  onChanged: (v) => _app.showCachedOnly.value = v,
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _FilterPopoverContent
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _FilterPopoverContent extends StatelessWidget {
+  _FilterPopoverContent();
+
+  final _app = AppState.instance;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final text = theme.textTheme;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      color: cs.surfaceContainerHighest,
+      surfaceTintColor: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      child: IntrinsicWidth(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              child: Text('Filter', style: text.labelSmall?.copyWith(color: cs.outline)),
+            ),
+            const Divider(height: 1),
+            SignalBuilder(
+              builder: (context) {
+                final active = _app.showCachedOnly.value;
+                return _FilterToggle(
+                  icon: Icons.storage,
+                  label: 'Has cached files',
+                  subtitle: 'Show only creators with cached images',
+                  value: active,
+                  onChanged: (v) => _app.showCachedOnly.value = v,
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterToggle extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _FilterToggle({required this.icon, required this.label, this.subtitle, required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final text = theme.textTheme;
+
+    return InkWell(
+      onTap: () => onChanged(!value),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: cs.onSurfaceVariant),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label, style: text.bodyLarge?.copyWith(color: cs.onSurface)),
+                  if (subtitle != null) Text(subtitle!, style: text.bodySmall?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              height: 24,
+              child: Switch(value: value, onChanged: onChanged, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _SettingsPopoverContent
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SettingsPopoverContent extends StatelessWidget {
+  _SettingsPopoverContent();
+
+  final _app = AppState.instance;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final text = theme.textTheme;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      color: cs.surfaceContainerHighest,
+      surfaceTintColor: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      child: IntrinsicWidth(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              child: Text('Settings', style: text.labelSmall?.copyWith(color: cs.outline)),
+            ),
+            const Divider(height: 1),
+            SignalBuilder(
+              builder: (context) {
+                final active = _app.showImageLoadAnimation.value;
+                return _FilterToggle(
+                  icon: Icons.animation,
+                  label: 'Image reveal animation',
+                  subtitle: 'Animated left-to-right reveal on thumbnails',
+                  value: active,
+                  onChanged: (v) => _app.setShowImageLoadAnimation(v),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

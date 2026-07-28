@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:hive_ce_flutter/adapters.dart';
+import 'package:signals/signals_flutter.dart';
 
 import '../api/models.dart';
 import '../api/pawchive_client.dart';
+import '../cache/image_meta_store.dart';
 
-enum SortBy { updated, favorited, indexed, name, service }
+enum SortBy { updated, favorited, indexed, name, service, cacheSize }
 
 extension SortByLabel on SortBy {
   String get label => switch (this) {
@@ -13,12 +15,15 @@ extension SortByLabel on SortBy {
         SortBy.indexed => 'Date Indexed',
         SortBy.name => 'Alphabetical',
         SortBy.service => 'Service',
+        SortBy.cacheSize => 'Cache Size',
       };
 }
 
 class AppState {
   static final AppState instance = AppState._();
   AppState._();
+
+  late final Box _settingsBox;
 
   final creators = signal<List<Creator>>([]);
   final creatorsLoading = signal<bool>(false);
@@ -30,12 +35,41 @@ class AppState {
   final sortBy = signal<SortBy>(SortBy.updated);
   final sortAscending = signal<bool>(false);
   final activeTab = signal<int>(0);
+  final showCachedOnly = signal<bool>(false);
+  final showImageLoadAnimation = signal<bool>(true);
 
-  List<Creator> get filteredCreators {
+  void init(Box settingsBox) {
+    _settingsBox = settingsBox;
+    showImageLoadAnimation.value =
+        _settingsBox.get('showImageLoadAnimation', defaultValue: true) as bool;
+  }
+
+  void setShowImageLoadAnimation(bool v) {
+    showImageLoadAnimation.value = v;
+    _settingsBox.put('showImageLoadAnimation', v);
+  }
+
+  late final filteredCreators = computed<List<Creator>>(() {
     var list = creators.value;
     final query = searchQuery.value.toLowerCase();
     if (query.isNotEmpty) {
       list = list.where((c) => c.name.toLowerCase().contains(query)).toList();
+    }
+    if (showCachedOnly.value) {
+      final hasCache = <String>{};
+      for (final m in ImageMetaStore.instance.allEntries.values) {
+        if (m.creatorId != null) hasCache.add(m.creatorId!);
+      }
+      list = list.where((c) => hasCache.contains(c.id)).toList();
+    }
+    final needsCacheSort = sortBy.value == SortBy.cacheSize;
+    final cacheBytes = needsCacheSort ? <String, int>{} : null;
+    if (needsCacheSort) {
+      for (final m in ImageMetaStore.instance.allEntries.values) {
+        if (m.creatorId != null) {
+          cacheBytes![m.creatorId!] = (cacheBytes[m.creatorId!] ?? 0) + m.bytes;
+        }
+      }
     }
     list = List.from(list)..sort((a, b) {
       int cmp = switch (sortBy.value) {
@@ -44,14 +78,15 @@ class AppState {
         SortBy.indexed => b.indexed.compareTo(a.indexed),
         SortBy.name => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
         SortBy.service => a.service.compareTo(b.service),
+        SortBy.cacheSize => (cacheBytes![b.id] ?? 0).compareTo(cacheBytes[a.id] ?? 0),
       };
       return sortAscending.value ? -cmp : cmp;
     });
     return list;
-  }
+  });
 
   Future<void> loadCreators({bool refresh = false}) async {
-    if (creatorsLoading.value) return;
+    if (creatorsLoading.peek()) return;
     creatorsLoading.value = true;
     creatorsError.value = null;
     try {

@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
+import '../api/api_constants.dart';
+
 class DioFileService extends FileService {
   final Dio _dio;
   final Map<String, CancelToken> _activeTokens = {};
@@ -9,9 +11,11 @@ class DioFileService extends FileService {
       : _dio = dio ??
             Dio(BaseOptions(
               responseType: ResponseType.stream,
+              connectTimeout: const Duration(seconds: 15),
+              receiveTimeout: const Duration(seconds: 30),
               headers: {
-                'Referer': 'https://pawchive.pw/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+                'Referer': ApiConstants.referer,
+                'User-Agent': ApiConstants.userAgent,
               },
             ));
 
@@ -34,7 +38,12 @@ class DioFileService extends FileService {
       );
       return DioFileServiceResponse(response);
     } finally {
-      _activeTokens.remove(url);
+      // Guard: only remove THIS request's token, not a newer one that may have
+      // been inserted by a subsequent request for the same URL whose
+      // _activeTokens[url] assignment raced with our finally block.
+      if (identical(_activeTokens[url], token)) {
+        _activeTokens.remove(url);
+      }
     }
   }
 }

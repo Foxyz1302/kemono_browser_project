@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:signals_flutter/signals_flutter.dart';
+import 'package:hive_ce_flutter/adapters.dart';
+import 'package:signals/signals_flutter.dart';
 
 import 'src/api/pawchive_client.dart';
 import 'src/archive/archive_cache.dart';
 import 'src/cache/image_cache_service.dart';
 import 'src/screens/home_screen.dart';
-import 'src/screens/login_screen.dart';
+import 'src/state/app_state.dart';
 import 'src/state/auth_state.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AuthState.instance.init();
-  await PawchiveClient.instance.init();
+  final settingsBox = await Hive.openBox('kemono_settings');
+  AppState.instance.init(settingsBox);
+  await PawchiveClient.instance.init(onReLogin: () => AuthState.instance.reLogin());
   await ImageCacheService.instance.init();
   await ArchiveCache.instance.init();
   await AuthState.instance.restoreSession();
@@ -54,8 +57,7 @@ class _AuthRouterState extends State<_AuthRouter> {
       AuthStatus.loading => const Scaffold(
           body: Center(child: CircularProgressIndicator()),
         ),
-      AuthStatus.loggedIn => const HomeScreen(),
-      AuthStatus.loggedOut || AuthStatus.error => const LoginScreen(),
+      _ => const HomeScreen(),
     };
   }
 }
