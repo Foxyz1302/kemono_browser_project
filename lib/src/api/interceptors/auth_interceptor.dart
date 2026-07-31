@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 
 /// Intercepts session-expiry signals (302 redirect or 401) on auth-gated
@@ -35,6 +36,7 @@ class AuthInterceptor extends QueuedInterceptor {
     // 302 = server redirected (likely to login page, session expired).
     // 401 = explicit unauthorized.
     if ((status == 302 || status == 401) && _isAuthPath(response.requestOptions)) {
+      debugPrint('AuthInterceptor: 302/401 on ${response.requestOptions.uri.path} — triggering reLogin');
       if (_retrying) {
         // Already retried — let the original response propagate.
         return handler.next(response);

@@ -31,7 +31,7 @@ Every feature is developed through unit and/or integration tests. Tests are only
 | **Lints** | `flutter_lints: ^6.0.0` |
 | **Build runner** | `build_runner: ^2.4.0` |
 | **Favorites state** | Pure filesystem (no database) |
-| **Cookie management** | `dio_cookie_manager` + `cookie_jar` |
+| **Cookie management** | Manual `Cookie` header via interceptor, session value stored in Hive |
 | **Storage paths** | `path_provider` |
 | **Hive adapter** | `hive_ce_flutter` |
 | **Link handling** | `url_launcher` |
@@ -77,7 +77,7 @@ POST /account/login
   → Set-Cookie: session=<Flask signed cookie>
 ```
 
-- Cookie persisted via `dio_cookie_manager` + `cookie_jar` (survives app restart)
+- Cookie persisted in Hive alongside credentials (survives app restart)
 - Login screen: username + password fields, call POST, check for redirect
 - No OAuth, no token refresh — cookie just works until server expiry
 - Credentials saved in hive_ce for auto-login on cold start

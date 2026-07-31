@@ -1,9 +1,9 @@
-import 'package:cookie_jar/cookie_jar.dart';
-import 'package:dio/dio.dart';
-import 'package:dio_cookie_manager/dio_cookie_manager.dart';
-import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+
+import '../utils.dart';
 import 'interceptors/auth_interceptor.dart';
 import 'interceptors/retry_interceptor.dart';
 import 'models.dart';
@@ -12,27 +12,23 @@ class PawchiveClient {
   static final PawchiveClient _instance = PawchiveClient._();
   static PawchiveClient get instance => _instance;
 
-  static const _baseUrl = 'https://pawchive.pw';
   static const _apiPrefix = '/api/v1';
 
   late final Dio dio;
-  CookieJar? cookieJar;
+
+  /// The raw session cookie value (without the "session=" prefix).
+  /// Set by [AuthState] after login or re-login.
+  String? sessionCookie;
 
   PawchiveClient._();
 
-  /// Initialise the HTTP client: cookie storage, default config, and interceptors.
+  /// Initialise the HTTP client with interceptors.
   ///
   /// [onReLogin] is called by [AuthInterceptor] when a 302/401 response
   /// suggests the session has expired. See [AuthInterceptor] for details.
   Future<void> init({Future<void> Function()? onReLogin}) async {
-    final appDir = await getApplicationDocumentsDirectory();
-    cookieJar = PersistCookieJar(
-      ignoreExpires: true,
-      storage: FileStorage('${appDir.path}/.cookies'),
-    );
-
     dio = Dio(BaseOptions(
-      baseUrl: _baseUrl,
+      baseUrl: FileHelpers.baseUrl,
       followRedirects: false,
       validateStatus: (status) => status != null && status < 500,
       connectTimeout: const Duration(seconds: 15),
@@ -41,13 +37,23 @@ class PawchiveClient {
     ));
 
     dio.interceptors.addAll([
-      CookieManager(cookieJar!),
+      // Attach session cookie on every request.
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          if (sessionCookie != null) {
+            options.headers[HttpHeaders.cookieHeader] =
+                'session=$sessionCookie';
+          }
+          handler.next(options);
+        },
+      ),
       if (onReLogin != null)
         AuthInterceptor(dio: dio, onReLogin: onReLogin),
       RetryInterceptor(),
     ]);
   }
 
+  /// Log in and return the Set-Cookie header value on success, or null.
   Future<Map<String, String>?> login({
     required String username,
     required String password,
@@ -69,10 +75,11 @@ class PawchiveClient {
     );
 
     debugPrint('Login response: status=${response.statusCode}');
+    final setCookie = response.headers.value('set-cookie');
+    debugPrint('Login Set-Cookie: $setCookie');
 
     if (response.statusCode == 302) {
       final location = response.headers.value('location');
-      final setCookie = response.headers.value('set-cookie');
       if (location != null || setCookie != null) {
         return {'location': location ?? '', 'set_cookie': setCookie ?? ''};
       }
@@ -105,6 +112,24 @@ class PawchiveClient {
     return list.map((j) => CreatorMapper.fromMap(j as Map<String, dynamic>)).toList();
   }
 
+  /// Remove attachments with null [FileInfo.path] — the API sometimes
+  /// returns attachments missing the `path` field, which are unusable.
+  /// Also clears the main [Post.file] if its path is null.
+  Post _sanitizePost(Post post) {
+    var changed = false;
+    final filtered = post.attachments.where((f) {
+      if (f.path == null) {
+        changed = true;
+        return false;
+      }
+      return true;
+    }).toList();
+    final mainFile = post.file?.path != null ? post.file : null;
+    if (mainFile != post.file) changed = true;
+    if (!changed) return post;
+    return post.copyWith(attachments: filtered, file: mainFile);
+  }
+
   Future<List<Post>> getCreatorPosts({
     required String service,
     required String creatorId,
@@ -112,7 +137,7 @@ class PawchiveClient {
     final response = await dio.get('$_apiPrefix/$service/user/$creatorId');
     _expectOk(response, '/$service/user/$creatorId');
     final list = response.data as List;
-    return list.map((j) => PostMapper.fromMap(j as Map<String, dynamic>)).toList();
+    return list.map((j) => _sanitizePost(PostMapper.fromMap(j as Map<String, dynamic>))).toList();
   }
 
   Future<Post> getSinglePost({
@@ -122,17 +147,27 @@ class PawchiveClient {
   }) async {
     final response = await dio.get('$_apiPrefix/$service/user/$creatorId/post/$postId');
     _expectOk(response, '/$service/user/$creatorId/post/$postId');
-    return PostMapper.fromMap(response.data as Map<String, dynamic>);
+    return _sanitizePost(PostMapper.fromMap(response.data as Map<String, dynamic>));
   }
 
   Future<List<FavoriteCreator>> getFavoriteCreators() async {
     final response = await dio.get(
       '$_apiPrefix/account/favorites',
-      queryParameters: {'type': 'creator'},
+      queryParameters: {'type': 'artist'},
     );
     _expectOk(response, '/account/favorites');
     final list = response.data as List;
     return list.map((j) => FavoriteCreatorMapper.fromMap(j as Map<String, dynamic>)).toList();
+  }
+
+  Future<List<Post>> getFavoritePosts() async {
+    final response = await dio.get(
+      '$_apiPrefix/account/favorites',
+      queryParameters: {'type': 'post'},
+    );
+    _expectOk(response, '/account/favorites');
+    final list = response.data as List;
+    return list.map((j) => _sanitizePost(PostMapper.fromMap(j as Map<String, dynamic>))).toList();
   }
 
   Future<void> favoriteCreator({

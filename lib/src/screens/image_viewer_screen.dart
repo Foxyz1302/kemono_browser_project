@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
+import 'package:kemono_browser_project/src/utils.dart';
 import 'package:signals/signals_flutter.dart';
 
 class MyImageViewerScreen extends StatelessWidget {
@@ -14,9 +15,6 @@ class MyImageViewerScreen extends StatelessWidget {
   final String postId;
 
   const MyImageViewerScreen({required this.files, required this.initialIndex, required this.creatorId, required this.postId, super.key});
-
-  static const _fullBase = 'https://file.pawchive.pw/data';
-  static const _thumbBase = 'https://img.pawchive.pw/thumbnail/data';
 
   static void open(
     BuildContext context, {
@@ -39,7 +37,7 @@ class MyImageViewerScreen extends StatelessWidget {
     final loadedRatios = <int, double>{};
 
     double aspectRatioFor(int index) {
-      final url = '$_thumbBase${imageFiles[index].path}';
+      final url = '${FileHelpers.imgThumbBase}${imageFiles[index].path}';
       final meta = ImageMetaStore.instance.lookup(url);
       if (meta != null) return meta.aspectRatio;
       return loadedRatios[index] ?? 1.0;
@@ -95,8 +93,8 @@ class MyImageViewerScreen extends StatelessWidget {
                             },
                             itemBuilder: (context, i) {
                               final f = imageFiles[i];
-                              final fullUrl = '$_fullBase${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
-                              final thumbUrl = '$_thumbBase${f.path}';
+                              final fullUrl = '${FileHelpers.fileDataBase}${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
+                              final thumbUrl = '${FileHelpers.imgThumbBase}${f.path}';
                               return _ImageViewerPage(
                                 url: fullUrl,
                                 thumbUrl: thumbUrl,
@@ -307,13 +305,10 @@ class _ImageViewerBodyState extends State<_ImageViewerBody> {
   late int _currentIndex;
   final _focusNode = FocusNode();
 
-  static const _fullBase = 'https://file.pawchive.pw/data';
-  static const _thumbBase = 'https://img.pawchive.pw/thumbnail/data';
-
   final _loadedRatios = <int, double>{};
 
   double _aspectRatioFor(int index) {
-    final url = '$_thumbBase${widget.files[index].path}';
+    final url = '${FileHelpers.imgThumbBase}${widget.files[index].path}';
     final meta = ImageMetaStore.instance.lookup(url);
     if (meta != null) return meta.aspectRatio;
     return _loadedRatios[index] ?? 1.0;
@@ -420,8 +415,8 @@ class _ImageViewerBodyState extends State<_ImageViewerBody> {
                     onPageChanged: _onPageChanged,
                     itemBuilder: (context, i) {
                       final f = widget.files[i];
-                      final fullUrl = '$_fullBase${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
-                      final thumbUrl = '$_thumbBase${f.path}';
+                      final fullUrl = '${FileHelpers.fileDataBase}${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
+                      final thumbUrl = '${FileHelpers.imgThumbBase}${f.path}';
                       return _ImageViewerPage(
                         url: fullUrl,
                         thumbUrl: thumbUrl,

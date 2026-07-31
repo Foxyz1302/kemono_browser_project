@@ -76,12 +76,12 @@ class Post with PostMappable {
 @MappableClass(caseStyle: CaseStyle.snakeCase)
 class FileInfo with FileInfoMappable {
   final String? name;
-  final String path;
+  final String? path;
   final bool? deferred;
 
   const FileInfo({
     this.name,
-    required this.path,
+    this.path,
     this.deferred,
   });
 }

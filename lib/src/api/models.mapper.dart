@@ -497,8 +497,12 @@ class FileInfoMapper extends ClassMapperBase<FileInfo> {
     _$name,
     opt: true,
   );
-  static String _$path(FileInfo v) => v.path;
-  static const Field<FileInfo, String> _f$path = Field('path', _$path);
+  static String? _$path(FileInfo v) => v.path;
+  static const Field<FileInfo, String> _f$path = Field(
+    'path',
+    _$path,
+    opt: true,
+  );
   static bool? _$deferred(FileInfo v) => v.deferred;
   static const Field<FileInfo, bool> _f$deferred = Field(
     'deferred',
@@ -591,14 +595,17 @@ class _FileInfoCopyWithImpl<$R, $Out>
   late final ClassMapperBase<FileInfo> $mapper =
       FileInfoMapper.ensureInitialized();
   @override
-  $R call({Object? name = $none, String? path, Object? deferred = $none}) =>
-      $apply(
-        FieldCopyWithData({
-          if (name != $none) #name: name,
-          if (path != null) #path: path,
-          if (deferred != $none) #deferred: deferred,
-        }),
-      );
+  $R call({
+    Object? name = $none,
+    Object? path = $none,
+    Object? deferred = $none,
+  }) => $apply(
+    FieldCopyWithData({
+      if (name != $none) #name: name,
+      if (path != $none) #path: path,
+      if (deferred != $none) #deferred: deferred,
+    }),
+  );
   @override
   FileInfo $make(CopyWithData data) => FileInfo(
     name: data.get(#name, or: $value.name),

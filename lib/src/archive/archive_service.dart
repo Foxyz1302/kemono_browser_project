@@ -6,6 +6,7 @@ import 'package:koni_archive/io.dart';
 import 'package:path/path.dart' as p;
 
 import '../api/api_constants.dart';
+import '../utils.dart';
 
 class ArchiveEntryInfo {
   final String path;
@@ -20,8 +21,6 @@ class ArchiveEntryInfo {
 }
 
 class ArchiveService {
-  static const _imageExts = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif'};
-
   final Dio dio;
 
   ArchiveService(this.dio);
@@ -54,19 +53,21 @@ class ArchiveService {
     return localPath;
   }
 
-  Future<List<ArchiveEntryInfo>> listEntries(String localPath) async {
+  Future<List<ArchiveEntryInfo>> listEntries(String localPath, {String? password}) async {
     final file = File(localPath);
     if (!file.existsSync()) {
       throw Exception('Archive file not found: $localPath');
     }
-    final archive = await openArchiveFile(localPath);
+    final archive = password != null
+        ? await openArchiveFile(localPath, options: ArchiveReadOptions(password: password))
+        : await openArchiveFile(localPath);
     try {
       return archive.files.map((e) {
         final ext = p.extension(e.path).toLowerCase();
         return ArchiveEntryInfo(
           path: e.path,
           uncompressedSize: e.uncompressedSize,
-          isImage: _imageExts.contains(ext),
+          isImage: FileHelpers.dottedImageExtensions.contains(ext),
         );
       }).toList();
     } finally {
@@ -74,8 +75,10 @@ class ArchiveService {
     }
   }
 
-  Future<Uint8List> readEntry(String localPath, String entryPath) async {
-    final archive = await openArchiveFile(localPath);
+  Future<Uint8List> readEntry(String localPath, String entryPath, {String? password}) async {
+    final archive = password != null
+        ? await openArchiveFile(localPath, options: ArchiveReadOptions(password: password))
+        : await openArchiveFile(localPath);
     try {
       final entry = archive.entry(entryPath);
       if (entry == null) throw Exception('Entry not found: $entryPath');
@@ -97,6 +100,14 @@ class ArchiveService {
     for (final e in entries) {
       await extractEntry(localPath, e.path, outputDir);
     }
+  }
+
+  Future<String> extractEntryToFile(String localPath, String entryPath, String outputDir, {String? password}) async {
+    final bytes = await readEntry(localPath, entryPath, password: password);
+    final outFile = File(p.join(outputDir, p.basename(entryPath)));
+    await outFile.parent.create(recursive: true);
+    await outFile.writeAsBytes(bytes);
+    return outFile.path;
   }
 
   void deleteArchivedFile(String localPath) {

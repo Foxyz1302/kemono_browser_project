@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive_ce_flutter/adapters.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:signals/signals_flutter.dart';
 
 import 'src/api/pawchive_client.dart';
@@ -11,9 +12,11 @@ import 'src/state/auth_state.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   await AuthState.instance.init();
   final settingsBox = await Hive.openBox('kemono_settings');
   AppState.instance.init(settingsBox);
+  await AppState.instance.loadLastChecked();
   await PawchiveClient.instance.init(onReLogin: () => AuthState.instance.reLogin());
   await ImageCacheService.instance.init();
   await ArchiveCache.instance.init();
@@ -53,6 +56,34 @@ class _AuthRouterState extends State<_AuthRouter> {
   Widget build(BuildContext context) {
     final status = AuthState.instance.authStatus.value;
     debugPrint('AuthRouter build: status=$status');
+    if (status == AuthStatus.error) {
+      final error = AuthState.instance.errorMsg.value ?? 'Unknown error';
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            spacing: 16,
+            children: [
+              Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
+              Text(
+                error,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+              FilledButton.icon(
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Retry'),
+                onPressed: () => AuthState.instance.restoreSession(),
+              ),
+              TextButton(
+                onPressed: () => AuthState.instance.authStatus.value = AuthStatus.loggedOut,
+                child: const Text('Use without signing in'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return switch (status) {
       AuthStatus.loading => const Scaffold(
           body: Center(child: CircularProgressIndicator()),

@@ -6,13 +6,15 @@ import 'package:kemono_browser_project/src/api/models.dart';
 import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
-import 'package:kemono_browser_project/src/widgets/popover.dart';
 import 'package:kemono_browser_project/src/widgets/search_bar.dart';
+import 'package:leaf_widgets/leaf_widgets.dart';
 import 'package:persistent_header_adaptive/persistent_header_adaptive.dart';
 import 'package:signals/signals_flutter.dart';
 
+import '../api/pawchive_client.dart';
 import '../state/app_state.dart';
 import '../state/auth_state.dart';
+import '../utils.dart';
 import 'creator_posts_screen.dart';
 import 'login_screen.dart';
 
@@ -49,9 +51,10 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _app = AppState.instance;
-  final _filterCtrl = FPopoverController();
-  final _mobileOverflowCtrl = FPopoverController();
-  final _settingsCtrl = FPopoverController();
+  final _filterCtrl = LeafPopoverController();
+  final _mobileOverflowCtrl = LeafPopoverController();
+  final _settingsCtrl = LeafPopoverController();
+  final _accountCtrl = LeafPopoverController();
 
   @override
   void initState() {
@@ -60,212 +63,191 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDesktopLayout(BuildContext context) {
-    return Row(
-      spacing: 6,
-      children: [
-        Material(
-          elevation: 4,
-          borderRadius: BorderRadius.circular(15),
-          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-          child: const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Text('Kemono', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          ),
-        ),
-        Expanded(
-          child: Material(
-            elevation: 4,
-            borderRadius: BorderRadius.circular(15),
-            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-              child: Row(
-                spacing: 4,
-                children: [
-                  Expanded(
-                    child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(15),
+      color: cs.surfaceContainerLow.withValues(alpha: 0.8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: Row(
+          spacing: 6,
+          children: [
+            const Text('Kemono', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            SizedBox(height: 32, child: VerticalDivider(width: 1, thickness: 1, color: cs.outlineVariant)),
+            SignalBuilder(
+              builder: (context) {
+                final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
+                if (!loggedIn) {
+                  return IconButton(
+                    icon: const Icon(Icons.login, size: 20),
+                    tooltip: 'Sign in',
+                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen())),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
+                  );
+                }
+                return LeafPopover(
+                  controller: _accountCtrl,
+                  childAnchor: Alignment.bottomCenter,
+                  popoverAnchor: Alignment.topCenter,
+                  spacing: 6,
+                  popoverBuilder: (context, ctrl) => _AccountMenuContent(controller: ctrl),
+                  child: IconButton(
+                    icon: const Icon(Icons.account_circle, size: 20),
+                    tooltip: 'Account',
+                    onPressed: () => _accountCtrl.toggle(),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
                   ),
-                  SignalBuilder(
-                    builder: (context) {
-                      final asc = _app.sortAscending.value;
-                      return IconButton(
-                        icon: Icon(asc ? Icons.arrow_upward : Icons.arrow_downward, size: 20),
-                        tooltip: asc ? 'Ascending' : 'Descending',
-                        onPressed: () => _app.sortAscending.value = !asc,
-                        visualDensity: VisualDensity.compact,
-                        style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
-                      );
-                    },
-                  ),
-                  SignalBuilder(
-                    builder: (context) {
-                      return DropdownButton<SortBy>(
-                        value: _app.sortBy.value,
-                        underline: const SizedBox.shrink(),
-                        borderRadius: BorderRadius.circular(15),
-                        elevation: 12,
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        icon: const Icon(Icons.arrow_drop_down, size: 20),
-                        style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                        dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
-                        items: SortBy.values.map((s) => DropdownMenuItem(value: s, child: Text(s.label))).toList(),
-                        onChanged: (v) {
-                          if (v != null) _app.sortBy.value = v;
-                        },
-                      );
-                    },
-                  ),
-                ],
-              ),
+                );
+              },
             ),
-          ),
-        ),
-        Material(
-          elevation: 4,
-          borderRadius: BorderRadius.circular(15),
-          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-          child: FPopover(
-            controller: _filterCtrl,
-            childAnchor: Alignment.bottomRight,
-            popoverAnchor: Alignment.topRight,
-            spacing: 6,
-            popoverBuilder: (context, _) => _FilterPopoverContent(),
-            child: Padding(
-              padding: const EdgeInsets.only(left: 2),
+            Expanded(
+              child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+            ),
+            SignalBuilder(
+              builder: (context) {
+                final asc = _app.sortAscending.value;
+                return IconButton(
+                  icon: Icon(asc ? Icons.arrow_upward : Icons.arrow_downward, size: 20),
+                  tooltip: asc ? 'Ascending' : 'Descending',
+                  onPressed: () => _app.sortAscending.value = !asc,
+                  visualDensity: VisualDensity.compact,
+                  style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
+                );
+              },
+            ),
+            SignalBuilder(
+              builder: (context) {
+                final isFavMode = _app.showFavoritesOnly.value;
+                return DropdownButton<SortBy>(
+                  value: _app.sortBy.value,
+                  underline: const SizedBox.shrink(),
+                  borderRadius: BorderRadius.circular(15),
+                  elevation: 12,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  icon: const Icon(Icons.arrow_drop_down, size: 20),
+                  style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                  dropdownColor: cs.surfaceContainerHigh,
+                  items: SortBy.values
+                      .where((s) => s.isFavoritesSort == isFavMode)
+                      .map((s) => DropdownMenuItem(value: s, child: Text(s.label)))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) _app.sortBy.value = v;
+                  },
+                );
+              },
+            ),
+            LeafPopover(
+              controller: _filterCtrl,
+              childAnchor: Alignment.bottomCenter,
+              popoverAnchor: Alignment.topCenter,
+              spacing: 6,
+              popoverBuilder: (context, _) => _FilterPopoverContent(),
               child: IconButton(
                 icon: Icon(_app.showCachedOnly.value ? Icons.filter_alt : Icons.filter_alt_outlined, size: 20),
                 tooltip: 'Filters',
                 onPressed: () => _filterCtrl.toggle(),
                 visualDensity: VisualDensity.compact,
-                style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+                style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
               ),
             ),
-          ),
-        ),
-        Material(
-          elevation: 4,
-          borderRadius: BorderRadius.circular(15),
-          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-          child: FPopover(
-            controller: _settingsCtrl,
-            childAnchor: Alignment.bottomRight,
-            popoverAnchor: Alignment.topRight,
-            spacing: 6,
-            popoverBuilder: (context, _) => _SettingsPopoverContent(),
-            child: Padding(
-              padding: const EdgeInsets.only(left: 2),
+            SizedBox(height: 32, child: VerticalDivider(width: 1, thickness: 1, color: cs.outlineVariant)),
+            LeafPopover(
+              controller: _settingsCtrl,
+              childAnchor: Alignment.bottomCenter,
+              popoverAnchor: Alignment.topCenter,
+              spacing: 6,
+              popoverBuilder: (context, _) => _SettingsPopoverContent(),
               child: IconButton(
                 icon: const Icon(Icons.settings, size: 20),
                 tooltip: 'Settings',
                 onPressed: () => _settingsCtrl.toggle(),
                 visualDensity: VisualDensity.compact,
-                style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+                style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
               ),
             ),
-          ),
+          ],
         ),
-        SignalBuilder(
-          builder: (context) {
-            final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
-            return Material(
-              elevation: 4,
-              borderRadius: BorderRadius.circular(15),
-              color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-              child: Padding(
-                padding: const EdgeInsets.only(left: 2),
-                child: IconButton(
-                  icon: Icon(loggedIn ? Icons.logout : Icons.login),
-                  tooltip: loggedIn ? 'Logout' : 'Sign in',
-                  onPressed: loggedIn
-                      ? () => AuthState.instance.logout()
-                      : () => Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const LoginScreen()),
-                          ),
-                ),
-              ),
-            );
-          },
-        ),
-      ],
+      ),
     );
   }
 
   Widget _buildMobileLayout(BuildContext context) {
-    return Row(
-      spacing: 6,
-      children: [
-        Expanded(
-          child: Material(
-            elevation: 4,
-            borderRadius: BorderRadius.circular(15),
-            color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(15),
+      color: cs.surfaceContainerLow.withValues(alpha: 0.8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          spacing: 4,
+          children: [
+            SignalBuilder(
+              builder: (context) {
+                final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
+                if (!loggedIn) {
+                  return IconButton(
+                    icon: const Icon(Icons.login, size: 20),
+                    tooltip: 'Sign in',
+                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen())),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
+                  );
+                }
+                return LeafPopover(
+                  controller: _accountCtrl,
+                  childAnchor: Alignment.bottomRight,
+                  popoverAnchor: Alignment.topRight,
+                  spacing: 6,
+                  popoverBuilder: (context, ctrl) => _AccountMenuContent(controller: ctrl),
+                  child: IconButton(
+                    icon: const Icon(Icons.account_circle, size: 20),
+                    tooltip: 'Account',
+                    onPressed: () => _accountCtrl.toggle(),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
+                  ),
+                );
+              },
+            ),
+            Expanded(
               child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
             ),
-          ),
-        ),
-        Material(
-          elevation: 4,
-          borderRadius: BorderRadius.circular(15),
-          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-          child: FPopover(
-            controller: _mobileOverflowCtrl,
-            childAnchor: Alignment.bottomRight,
-            popoverAnchor: Alignment.topRight,
-            spacing: 6,
-            popoverBuilder: (context, _) => _MobileSortFilterContent(),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              child: Icon(Icons.tune, size: 20),
+            LeafPopover(
+              controller: _mobileOverflowCtrl,
+              childAnchor: Alignment.bottomRight,
+              popoverAnchor: Alignment.topRight,
+              spacing: 6,
+              popoverBuilder: (context, _) => _MobileSortFilterContent(),
+              child: IconButton(
+                icon: const Icon(Icons.tune, size: 20),
+                tooltip: 'Sort & Filter',
+                onPressed: () => _mobileOverflowCtrl.toggle(),
+                visualDensity: VisualDensity.compact,
+                style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
+              ),
             ),
-          ),
-        ),
-        Material(
-          elevation: 4,
-          borderRadius: BorderRadius.circular(15),
-          color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-          child: FPopover(
-            controller: _settingsCtrl,
-            childAnchor: Alignment.bottomRight,
-            popoverAnchor: Alignment.topRight,
-            spacing: 6,
-            popoverBuilder: (context, _) => _SettingsPopoverContent(),
-            child: Padding(
-              padding: const EdgeInsets.only(left: 2),
+            LeafPopover(
+              controller: _settingsCtrl,
+              childAnchor: Alignment.bottomRight,
+              popoverAnchor: Alignment.topRight,
+              spacing: 6,
+              popoverBuilder: (context, _) => _SettingsPopoverContent(),
               child: IconButton(
                 icon: const Icon(Icons.settings, size: 20),
                 tooltip: 'Settings',
                 onPressed: () => _settingsCtrl.toggle(),
                 visualDensity: VisualDensity.compact,
-                style: IconButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant),
+                style: IconButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
               ),
             ),
-          ),
+          ],
         ),
-        SignalBuilder(
-          builder: (context) {
-            final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
-            return Material(
-              elevation: 4,
-              borderRadius: BorderRadius.circular(15),
-              color: Theme.of(context).colorScheme.surfaceContainerLow.withValues(alpha: 0.8),
-              child: Padding(
-                padding: const EdgeInsets.only(left: 2),
-                child: IconButton(
-                  icon: Icon(loggedIn ? Icons.logout : Icons.login),
-                  tooltip: loggedIn ? 'Logout' : 'Sign in',
-                  onPressed: loggedIn
-                      ? () => AuthState.instance.logout()
-                      : () => Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const LoginScreen()),
-                          ),
-                ),
-              ),
-            );
-          },
-        ),
-      ],
+      ),
     );
   }
 
@@ -302,7 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 900),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         child: LayoutBuilder(
                           builder: (context, constraints) {
                             if (constraints.maxWidth < 560) {
@@ -316,6 +298,22 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+              // SliverToBoxAdapter(
+              //   child: Center(
+              //     child: Padding(
+              //       padding: const EdgeInsets.symmetric(vertical: 8),
+              //       child: Row(
+              //         mainAxisSize: MainAxisSize.min,
+              //         spacing: 10,
+              //         children: [
+              //           const AnimatedStar(size: 20),
+              //           Text('New Posts', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontSize: 13)),
+              //           const AnimatedStar(size: 16, color: Colors.lightBlueAccent),
+              //         ],
+              //       ),
+              //     ),
+              //   ),
+              // ),
               if (creators.isEmpty)
                 const SliverFillRemaining(child: Center(child: Text('No creators found')))
               else
@@ -462,15 +460,12 @@ class CreatorTile extends StatelessWidget {
   final Creator creator;
   const CreatorTile(this.creator, {super.key});
 
-  static const _base = 'https://pawchive.pw';
-
   @override
   Widget build(BuildContext context) {
     final serviceColor = serviceColors[creator.service] ?? Colors.grey;
     final serviceLabel = serviceLabels[creator.service] ?? creator.service;
-    final bannerUrl = '$_base/banners/${creator.service}/${creator.id}';
-    final iconUrl = '$_base/icons/${creator.service}/${creator.id}';
-    final diff = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(creator.updated * 1000));
+    final bannerUrl = '${FileHelpers.baseUrl}/banners/${creator.service}/${creator.id}';
+    final iconUrl = '${FileHelpers.baseUrl}/icons/${creator.service}/${creator.id}';
 
     return Material(
       clipBehavior: Clip.antiAlias,
@@ -479,10 +474,16 @@ class CreatorTile extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Image(
-            image: KemonoImageProvider(bannerUrl),
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => ColoredBox(color: serviceColor.withValues(alpha: 0.3)),
+          SignalBuilder(
+            builder: (context) {
+              final showAnim = AppState.instance.showImageLoadAnimation.value;
+              return LeafImage(
+                image: KemonoImageProvider(bannerUrl),
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => ColoredBox(color: serviceColor.withValues(alpha: 0.3)),
+                revealAnimation: showAnim ? const GradientRevealAnimation() : null,
+              );
+            },
           ),
           const ColoredBox(color: Colors.black45),
           Material(
@@ -495,80 +496,175 @@ class CreatorTile extends StatelessWidget {
               },
             ),
           ),
-          Positioned(
-            left: 6,
-            bottom: 6,
-            right: 90,
-            child: IgnorePointer(
-              child: Row(
-                spacing: 10,
-                children: [
-                  ClipOval(
-                    child: Container(
-                      width: 40,
-                      height: 40,
-                      color: Colors.black54,
-                      child: Image(
-                        image: KemonoImageProvider(iconUrl),
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Icon(Icons.person, color: Colors.white.withValues(alpha: 0.5), size: 24),
+          Padding(
+            padding: const EdgeInsets.all(6),
+            child: Column(
+              crossAxisAlignment: .start,
+              spacing: 6,
+              children: [
+                Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  decoration: BoxDecoration(color: serviceColor, borderRadius: BorderRadius.circular(4)),
+                  child: Text(
+                    serviceLabel,
+                    style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: IgnorePointer(
+                        child: Row(
+                          spacing: 10,
+                          children: [
+                            ClipOval(
+                              child: Container(
+                                width: 40,
+                                height: 40,
+                                color: Colors.black54,
+                                child: SignalBuilder(
+                                  builder: (context) {
+                                    final showAnim = AppState.instance.showImageLoadAnimation.value;
+                                    return LeafImage(
+                                      image: KemonoImageProvider(iconUrl),
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, _, _) => Icon(Icons.person, color: Colors.white.withValues(alpha: 0.5), size: 24),
+                                      revealAnimation: showAnim ? const GradientRevealAnimation() : null,
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Column(
+                                spacing: 4,
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    creator.name,
+                                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    '${creator.favorited} favorites',
+                                    style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 11),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (!creator.everImported)
+                              Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(color: Colors.orange.shade800, borderRadius: BorderRadius.circular(6)),
+                                child: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 16),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                  Expanded(
-                    child: Column(
-                      spacing: 4,
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          creator.name,
-                          style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text('${creator.favorited} favorites', style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 11)),
-                      ],
+                    SignalBuilder(
+                      builder: (context) {
+                        final isFav = AppState.instance.favoritedIds.value.contains('${creator.service}/${creator.id}');
+                        return AnimatedFavoriteButton(
+                          key: ValueKey('cht_${creator.service}_${creator.id}'),
+                          isFavorited: isFav,
+                          size: 20,
+                          onChanged: (newIsFav) async {
+                            final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
+                            if (!loggedIn) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sign in to favorite creators')));
+                              }
+                              return false;
+                            }
+                            try {
+                              if (newIsFav) {
+                                await PawchiveClient.instance.favoriteCreator(service: creator.service, creatorId: creator.id);
+                                AppState.instance.addFavoriteCreator(creator);
+                              } else {
+                                await PawchiveClient.instance.unfavoriteCreator(service: creator.service, creatorId: creator.id);
+                                AppState.instance.removeFavoriteCreator(creator.service, creator.id);
+                              }
+                              return true;
+                            } catch (e, st) {
+                              debugPrint('Failed to toggle favorite: $e\n$st');
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+                              }
+                              return false;
+                            }
+                          },
+                        );
+                      },
                     ),
-                  ),
-                  if (!creator.everImported)
-                    Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(color: Colors.orange.shade800, borderRadius: BorderRadius.circular(6)),
-                      child: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 16),
-                    ),
-                ],
-              ),
+                  ],
+                ),
+              ],
             ),
           ),
-          Positioned(
-            bottom: 6,
-            right: 6,
-            child: IgnorePointer(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: serviceColor, borderRadius: BorderRadius.circular(4)),
-                child: Text(
-                  serviceLabel,
-                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
+          SignalBuilder(
+            builder: (context) {
+              final key = '${creator.service}/${creator.id}';
+              final fc = AppState.instance.favoriteCreatorMap.value[key];
+              if (fc == null) return SizedBox.shrink();
+              DateTime? favDate;
+              try {
+                favDate = DateTime.parse(fc.updated);
+              } catch (_) {
+                return SizedBox.shrink();
+              }
+              final diff = DateTime.now().difference(favDate);
+              final unixSec = favDate.millisecondsSinceEpoch ~/ 1000;
+              return Positioned(
+                top: 6,
+                left: 6,
+                child: IgnorePointer(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      border: Border(left: BorderSide(color: heatColorCorrect(diff), width: 3)),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(_timeAgo(unixSec), style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10)),
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
-          Positioned(
-            top: 6,
-            left: 6,
-            child: IgnorePointer(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  border: .fromLTRB(left: BorderSide(color: heatColorCorrect(diff), width: 3)),
-                  borderRadius: BorderRadius.circular(4),
+          SignalBuilder(
+            builder: (context) {
+              final hasNew = AppState.instance.creatorsWithNewPosts.value.contains('${creator.service}/${creator.id}');
+              if (!hasNew) return SizedBox.shrink();
+              return Positioned(top: 32, left: 8, child: IgnorePointer(child: AnimatedStar(size: 20)));
+            },
+          ),
+          // Bottom accent strip for favorited creators.
+          // Painted as BoxDecoration foreground so the bottom border respects
+          // the rounded corners (via Border.paint + borderRadius).
+          SignalBuilder(
+            builder: (context) {
+              final isFav = AppState.instance.favoritedIds.value.contains('${creator.service}/${creator.id}');
+              return Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                top: 0,
+                child: IgnorePointer(
+                  child: AnimatedContainer(
+                    duration: Duration(milliseconds: 400),
+                    curve: Curves.fastEaseInToSlowEaseOut,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border(bottom: isFav ? BorderSide(color: Colors.red, width: 3) : BorderSide.none),
+                    ),
+                  ),
                 ),
-                child: Text(_timeAgo(creator.updated), style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10)),
-              ),
-            ),
+              );
+            },
           ),
           Positioned(
             top: 0,
@@ -583,9 +679,9 @@ class CreatorTile extends StatelessWidget {
                   type: .transparency,
                   child: InkWell(
                     onTap: () => showDialog(context: context, builder: (context) => CreatorCacheDialog(creator)),
-                    borderRadius: .circular(4),
+                    borderRadius: BorderRadius.circular(4),
                     child: Padding(
-                      padding: .all(6),
+                      padding: const EdgeInsets.all(6),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)),
@@ -803,6 +899,7 @@ class _MobileSortFilterContent extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: SignalBuilder(
                 builder: (context) {
+                  final isFavMode = _app.showFavoritesOnly.value;
                   return DropdownButton<SortBy>(
                     value: _app.sortBy.value,
                     underline: const SizedBox.shrink(),
@@ -812,7 +909,10 @@ class _MobileSortFilterContent extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
                     dropdownColor: cs.surfaceContainerHigh,
-                    items: SortBy.values.map((s) => DropdownMenuItem(value: s, child: Text(s.label))).toList(),
+                    items: SortBy.values
+                        .where((s) => s.isFavoritesSort == isFavMode)
+                        .map((s) => DropdownMenuItem(value: s, child: Text(s.label)))
+                        .toList(),
                     onChanged: (v) {
                       if (v != null) _app.sortBy.value = v;
                     },
@@ -996,6 +1096,158 @@ class _SettingsPopoverContent extends StatelessWidget {
               },
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _AccountMenuContent
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _AccountMenuContent extends StatelessWidget {
+  _AccountMenuContent({required this.controller});
+
+  final LeafPopoverController controller;
+  final _app = AppState.instance;
+  final _auth = AuthState.instance;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final text = theme.textTheme;
+    final username = _auth.username;
+    final initial = username.isNotEmpty ? username[0].toUpperCase() : '?';
+
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: cs.surfaceContainerHighest,
+      surfaceTintColor: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      child: IntrinsicWidth(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Avatar header ──────────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              decoration: BoxDecoration(color: cs.surfaceContainerHigh),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: cs.primaryContainer,
+                    child: Text(
+                      initial,
+                      style: TextStyle(color: cs.onPrimaryContainer, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(username, style: text.titleSmall?.copyWith(color: cs.onSurface)),
+                        const SizedBox(height: 2),
+                        SignalBuilder(
+                          builder: (context) {
+                            final count = _app.favoriteCreators.value.length;
+                            return Text('$count followed', style: text.bodySmall?.copyWith(color: cs.outline));
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // ── Refresh ────────────────────────────────────────────────────────
+            SignalBuilder(
+              builder: (context) {
+                final loading = _app.favoritesLoading.value;
+                return _MenuRow(
+                  icon: loading ? Icons.sync : Icons.sync,
+                  label: loading ? 'Refreshing…' : 'Refresh favorites',
+                  trailing: loading
+                      ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: cs.onSurfaceVariant))
+                      : null,
+                  onTap: loading ? null : () => _app.loadFavorites(),
+                );
+              },
+            ),
+            // ── Favorites-only toggle ──────────────────────────────────────────
+            SignalBuilder(
+              builder: (context) {
+                final active = _app.showFavoritesOnly.value;
+                return _FilterToggle(
+                  icon: Icons.favorite,
+                  label: 'Favorites only',
+                  subtitle: 'Show only followed creators',
+                  value: active,
+                  onChanged: (v) => _app.showFavoritesOnly.value = v,
+                );
+              },
+            ),
+            const Divider(height: 1),
+            // ── Sign out ───────────────────────────────────────────────────────
+            _MenuRow(
+              icon: Icons.logout,
+              label: 'Sign out',
+              color: cs.error,
+              onTap: () {
+                _auth.logout();
+                controller.hide();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _MenuRow — simple icon + label tappable row
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _MenuRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color? color;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  const _MenuRow({required this.icon, required this.label, this.color, this.trailing, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final fg = color ?? cs.onSurface;
+    final opacity = onTap == null ? 0.5 : 1.0;
+
+    return Opacity(
+      opacity: opacity,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: fg),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(label, style: text.bodyLarge?.copyWith(color: fg)),
+              ),
+              if (trailing != null) ...[const SizedBox(width: 8), trailing!],
+            ],
+          ),
         ),
       ),
     );

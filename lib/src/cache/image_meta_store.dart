@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:signals/signals_flutter.dart';
 
 import '../api/models.dart';
+import '../utils.dart';
 import 'image_size_parser.dart';
 
 class ImageMeta {
@@ -210,10 +211,9 @@ class ImageMetaStore {
   }
 
   static List<String> _postUrls(Post post) {
-    const base = 'https://img.pawchive.pw/thumbnail/data';
     return [
-      if (post.file != null) '$base${post.file!.path}',
-      for (final a in post.attachments) '$base${a.path}',
+      if (post.file != null) '${FileHelpers.imgThumbBase}${post.file!.path}',
+      for (final a in post.attachments) '${FileHelpers.imgThumbBase}${a.path}',
     ];
   }
 
