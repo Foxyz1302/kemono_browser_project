@@ -10,7 +10,13 @@ import 'package:dio/dio.dart';
 ///
 /// Uses a [_retrying] flag to prevent infinite retry loops when the re-login
 /// request or the retried request itself fails.
-class AuthInterceptor extends QueuedInterceptor {
+///
+/// NOTE: This is a plain [Interceptor], NOT a [QueuedInterceptor]. A queued
+/// interceptor holds a shared lock for the whole request lifecycle, so the
+/// re-login POST issued from within [onResponse] would wait behind the very
+/// request that is waiting for it — a deadlock that left the app stuck on the
+/// "loading" spinner forever.
+class AuthInterceptor extends Interceptor {
   final Dio _dio;
   final Future<void> Function() _onReLogin;
   bool _retrying = false;

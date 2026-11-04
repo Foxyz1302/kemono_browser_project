@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -53,8 +54,15 @@ class PawchiveClient {
     ]);
   }
 
-  /// Log in and return the Set-Cookie header value on success, or null.
-  Future<Map<String, String>?> login({
+  /// Log in and report whether the server actually authenticated us.
+  ///
+  /// Kemono-style backends respond with a 302 redirect on BOTH outcomes:
+  ///   success → `Location: /artists?logged_in=yes&role=consumer`
+  ///   failure → `Location: /account/login?location=/artists` (session cookie
+  ///   carries a "_flashes" message like "Username or password is incorrect").
+  /// Treating any 302 as success (the old bug) made failed logins look
+  /// successful, saving bad credentials to Hive and looping forever.
+  Future<LoginResult> login({
     required String username,
     required String password,
   }) async {
@@ -80,12 +88,72 @@ class PawchiveClient {
 
     if (response.statusCode == 302) {
       final location = response.headers.value('location');
-      if (location != null || setCookie != null) {
-        return {'location': location ?? '', 'set_cookie': setCookie ?? ''};
+      // A failed login redirects straight back to the login page.
+      final bouncedBackToLogin = location != null && location.startsWith('/account/login');
+      if (!bouncedBackToLogin && location != null) {
+        return LoginResult(success: true, setCookie: setCookie ?? '');
       }
+      final serverMessage = _decodeFailureReason(setCookie);
+      debugPrint('Login rejected by server: $serverMessage');
+      return LoginResult(
+        success: false,
+        errorMessage: serverMessage ?? 'Invalid username or password',
+      );
     }
 
     debugPrint('Login failed: unexpected status ${response.statusCode}');
+    return LoginResult(
+      success: false,
+      errorMessage: 'Unexpected server response (${response.statusCode})',
+    );
+  }
+
+  /// Best-effort retrieval of the server's rejection reason from the Flask
+  /// session cookie set on a failed login. The payload is only signed, not
+  /// encrypted, and may be zlib-compressed (leading "." on the blob).
+  String? _decodeFailureReason(String? setCookie) {
+    final match = setCookie == null ? null : RegExp(r'session=([^;]+)').firstMatch(setCookie);
+    final cookieValue = match?.group(1);
+    if (cookieValue == null) return null;
+
+    // Cookie packet: "<payload>.<timestamp>.<signature>"; when compressed the
+    // payload itself is prefixed with a dot (".eJ..."). Decode the first
+    // non-empty parts and look for flask's "_flashes" tuple.
+    for (final part in cookieValue.split('.')) {
+      List<int> bytes;
+      try {
+        bytes = base64Url.decode(base64Url.normalize(part));
+      } catch (_) {
+        continue;
+      }
+      // zlib-deflate the payload if it starts with a zlib header.
+      if (bytes.length > 2 && bytes[0] == 0x78 && (bytes[1] == 0x9c || bytes[1] == 0x01)) {
+        try {
+          bytes = zlib.decode(bytes);
+        } catch (_) {
+          continue;
+        }
+      }
+      try {
+        final decoded = jsonDecode(utf8.decode(bytes));
+        if (decoded is Map) {
+          final flashes = decoded['_flashes'];
+          if (flashes is List) {
+            for (final flash in flashes) {
+              // Flask TaggedJSONSerializer encodes tuples as {" t": [...]}.
+              if (flash is Map && flash[' t'] is List) {
+                final t = flash[' t'] as List;
+                if (t.length == 2 && t[1] is String && (t[1] as String).isNotEmpty) {
+                  return t[1] as String;
+                }
+              }
+            }
+          }
+        }
+      } catch (_) {
+        // Not a decodable session payload; keep scanning parts.
+      }
+    }
     return null;
   }
 
@@ -213,4 +281,23 @@ class PawchiveApiException implements Exception {
 
   @override
   String toString() => 'PawchiveApiException: $statusCode on $path';
+}
+
+/// Outcome of a [PawchiveClient.login] attempt.
+class LoginResult {
+  const LoginResult({
+    required this.success,
+    this.setCookie,
+    this.errorMessage,
+  });
+
+  final bool success;
+
+  /// The raw `Set-Cookie` header value on success (used to extract the
+  /// session cookie).
+  final String? setCookie;
+
+  /// Human-readable rejection reason on failure (may mirror the server's own
+  /// flash message, e.g. "Username or password is incorrect").
+  final String? errorMessage;
 }

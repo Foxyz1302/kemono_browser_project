@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show instantiateImageCodec;
@@ -9,12 +10,14 @@ import 'package:kemono_browser_project/src/archive/archive_service.dart';
 import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
+import 'package:kemono_browser_project/src/state/app_state.dart';
 import 'package:kemono_browser_project/src/utils.dart';
 import 'package:leaf_widgets/leaf_widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 import 'package:signals/signals_flutter.dart';
+import 'package:video_adapter_media_kit/video_adapter_media_kit.dart';
 
 // =============================================================================
 // FullscreenImageViewerScreen — entry points
@@ -26,7 +29,7 @@ import 'package:signals/signals_flutter.dart';
 /// Both [open] and [openArchive] delegate to [_FullscreenPageViewInner] so
 /// they share the same dark-overlay chrome (nav arrows, keyboard nav, page
 /// counter). Pages are plain content: zoomable images wrapped in
-/// [LeafZoomable], videos as a bare media_kit surface.
+/// [LeafZoomable], videos via [LeafVideoPage] over [MediaKitAdapter].
 class FullscreenImageViewerScreen extends StatelessWidget {
   const FullscreenImageViewerScreen({super.key});
 
@@ -123,7 +126,19 @@ class FullscreenImageViewerScreen extends StatelessWidget {
         final ext = (f.name ?? '').split('.').last.toLowerCase();
         final fullUrl = '${FileHelpers.fileDataBase}${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
         if (FileHelpers.videoExtensions.contains(ext)) {
-          return _VideoPage(key: ValueKey('vid_$i'), url: fullUrl, creatorId: creatorId, postId: postId);
+          return LeafVideoPage(
+            key: ValueKey('vid_$i'),
+            createAdapter: () => MediaKitAdapter(
+              initialVolume: AppState.instance.getPlayerVolume(),
+              onVolumeChanged: AppState.instance.setPlayerVolume,
+            ),
+            url: fullUrl,
+            headers: const {
+              'Referer': 'https://pawchive.pw/',
+              'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+          );
         }
         final thumbUrl = '${FileHelpers.imgThumbBase}${f.path}';
         return _FullscreenPage(key: ValueKey('img_$i'), url: fullUrl, thumbUrl: thumbUrl, creatorId: creatorId, postId: postId);
@@ -209,18 +224,22 @@ class _FullscreenPageViewInnerState extends State<_FullscreenPageViewInner> {
   Widget build(BuildContext context) {
     return Material(
       type: MaterialType.transparency,
-      child: KeyboardListener(
+      child: Focus(
         focusNode: widget.focusNode,
-        onKeyEvent: (event) {
-          if (event is! KeyDownEvent && event is! KeyRepeatEvent) return;
+        onKeyEvent: (node, event) {
+          if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
           switch (event.logicalKey) {
             case LogicalKeyboardKey.arrowLeft:
               widget.onGoTo(widget.currentIndex.value - 1);
+              return KeyEventResult.handled;
             case LogicalKeyboardKey.arrowRight:
               widget.onGoTo(widget.currentIndex.value + 1);
+              return KeyEventResult.handled;
             case LogicalKeyboardKey.escape:
               Navigator.of(context).pop();
+              return KeyEventResult.handled;
           }
+          return KeyEventResult.ignored;
         },
         child: Stack(
           fit: StackFit.expand,
@@ -232,8 +251,7 @@ class _FullscreenPageViewInnerState extends State<_FullscreenPageViewInner> {
               onPageChanged: (index) => widget.currentIndex.value = index,
               onDismissed: () => Navigator.of(context).pop(),
               onTapOutside: () => Navigator.of(context).pop(),
-              backgroundBuilder: (context, progress) =>
-                  Container(color: Colors.black.withValues(alpha: 0.87 * (1 - progress))),
+              backgroundBuilder: (context, progress) => Container(color: Colors.black.withValues(alpha: 0.87 * (1 - progress))),
               // The app has its own chrome below (arrows, counter, keyboard).
               controlsBuilder: (context, controls) => const SizedBox.shrink(),
               pageBuilder: widget.pageBuilder,
@@ -635,77 +653,6 @@ class _ArchivePageState extends State<_ArchivePage> {
           ),
         );
       },
-    );
-  }
-}
-
-// =============================================================================
-// _VideoPage — a single page for API-sourced videos
-// =============================================================================
-
-class _VideoPage extends StatefulWidget {
-  final String url;
-  final String creatorId;
-  final String postId;
-
-  const _VideoPage({super.key, required this.url, required this.creatorId, required this.postId});
-
-  @override
-  State<_VideoPage> createState() => _VideoPageState();
-}
-
-class _VideoPageState extends State<_VideoPage> {
-  late final Player _player;
-  late final VideoController _videoController;
-  bool _isPlaying = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _player = Player();
-    _videoController = VideoController(_player);
-    _openMedia();
-    _setupListeners();
-  }
-
-  void _openMedia() {
-    _player.open(
-      Media(
-        widget.url,
-        httpHeaders: {
-          'Referer': 'https://pawchive.pw/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-      ),
-    );
-  }
-
-  void _setupListeners() {
-    _player.stream.playing.listen((playing) {
-      if (mounted) setState(() => _isPlaying = playing);
-    });
-  }
-
-  @override
-  void dispose() {
-    _player.dispose();
-    super.dispose();
-  }
-
-  void _togglePlayPause() {
-    if (_isPlaying) {
-      _player.pause();
-    } else {
-      _player.play();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      onTap: _togglePlayPause,
-      child: Video(alignment: .center, fit: .contain, fill: Colors.transparent, controller: _videoController),
     );
   }
 }

@@ -49,3 +49,8 @@ app.*.map.json
 
 .zcode/
 .cookies/
+
+# Local build inputs / scratch data (not part of the app)
+/data/*.db
+/docs/my-kemono-favorites.json
+/test/read_hive.dart

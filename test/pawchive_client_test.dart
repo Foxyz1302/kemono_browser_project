@@ -9,13 +9,13 @@ void main() {
     late PawchiveClient client;
     late Dio dio;
 
-    setUp(() {
+    setUpAll(() async {
       client = PawchiveClient.instance;
-      dio = Dio(BaseOptions(
-        baseUrl: 'https://pawchive.pw',
-        validateStatus: (status) => status != null && status < 500,
-      ));
-      client.dio = dio;
+      await client.init();
+    });
+
+    setUp(() {
+      dio = client.dio;
     });
 
     test('getCreators builds correct URL', () async {
@@ -62,7 +62,7 @@ void main() {
       final adapter = MockAdapter(requestHandler: (request) {
         expect(request.method, 'GET');
         expect(request.path, '/api/v1/account/favorites');
-        expect(request.queryParameters, {'type': 'creator'});
+        expect(request.queryParameters, {'type': 'artist'});
         return ResponseBody.fromString('[]', 200, headers: {
           Headers.contentTypeHeader: ['application/json'],
         });
@@ -129,19 +129,35 @@ void main() {
       dio.httpClientAdapter = adapter;
 
       final result = await client.login(username: 'foxyz', password: 'secret');
-      expect(result, isNotNull);
-      expect(result!['location'], '/artists?logged_in=yes&role=consumer');
-      expect(result['set_cookie'], 'session=abc123');
+      expect(result.success, isTrue);
+      expect(result.setCookie, 'session=abc123');
     });
 
-    test('login returns null on non-302 status', () async {
+    test('login treats 302 back to /account/login as a failure', () async {
+      final adapter = MockAdapter(requestHandler: (_) {
+        return ResponseBody.fromString('', 302, headers: {
+          'location': ['/account/login?location=/artists'],
+          'set-cookie': [
+            'session=eyJfcGVybWFuZW50Ijp0cnVlLCJfZmxhc2hlcyI6W3siIHQiOlsibWVzc2FnZSIsIlVzZXJuYW1lIG9yIHBhc3N3b3JkIGlzIGluY29ycmVjdCJdfV19.anWvGQ.iPkUawhFccV922l-t_4cOJ3PPDY; Expires=Mon, 04 Aug 2036 10:10:33 GMT; HttpOnly; Path=/; SameSite=Lax',
+          ],
+        });
+      });
+      dio.httpClientAdapter = adapter;
+
+      final result = await client.login(username: 'foxyz', password: 'wrong');
+      expect(result.success, isFalse);
+      expect(result.errorMessage, 'Username or password is incorrect');
+    });
+
+    test('login reports unexpected status as failure', () async {
       final adapter = MockAdapter(requestHandler: (_) {
         return ResponseBody.fromString('', 200);
       });
       dio.httpClientAdapter = adapter;
 
       final result = await client.login(username: 'foxyz', password: 'secret');
-      expect(result, isNull);
+      expect(result.success, isFalse);
+      expect(result.errorMessage, isNotNull);
     });
 
     test('throws PawchiveApiException on non-2xx GET', () async {

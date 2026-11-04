@@ -10,43 +10,16 @@ import 'package:signals/signals_flutter.dart';
 import '../api/models.dart';
 import '../api/pawchive_client.dart';
 import '../cache/image_meta_store.dart';
+import 'creator_alias_index.dart';
+import 'creator_sort_service.dart';
 
-enum SortBy {
-  // All-creators sorts
-  favorited,
-  indexed,
-  updated,
-  name,
-  service,
-  cacheSize,
-  // Favorites-only sorts
-  favUpdated,
-  favLastImported,
-}
-
-extension SortByLabel on SortBy {
-  String get label => switch (this) {
-        SortBy.favorited => 'Popularity',
-        SortBy.indexed => 'Date Indexed',
-        SortBy.updated => 'Date Updated',
-        SortBy.name => 'Alphabetical',
-        SortBy.service => 'Service',
-        SortBy.cacheSize => 'Cache Size',
-        SortBy.favUpdated => 'New Post Date',
-        SortBy.favLastImported => 'Reimported Date',
-      };
-
-  bool get isFavoritesSort => switch (this) {
-        SortBy.favUpdated || SortBy.favLastImported => true,
-        _ => false,
-      };
-}
+export 'creator_sort_service.dart' show SortBy, SortByLabel;
 
 class AppState {
   static final AppState instance = AppState._();
   AppState._();
 
-  late final Box _settingsBox;
+  Box? _settingsBox;
 
   final creators = signal<List<Creator>>([]);
   final creatorsLoading = signal<bool>(false);
@@ -111,16 +84,29 @@ class AppState {
     return result;
   });
 
-  void init(Box settingsBox) {
+  void init(Box? settingsBox) {
     _settingsBox = settingsBox;
-    showImageLoadAnimation.value =
-        _settingsBox.get('showImageLoadAnimation', defaultValue: true) as bool;
-    _initSortModeEffect();
+    showImageLoadAnimation.value = (settingsBox?.get('showImageLoadAnimation', defaultValue: true) as bool?) ?? true;
+    if (!_effectsReady) {
+      _effectsReady = true;
+      _initSortModeEffect();
+      _initCreatorSortEffect();
+    }
   }
 
   void setShowImageLoadAnimation(bool v) {
     showImageLoadAnimation.value = v;
-    _settingsBox.put('showImageLoadAnimation', v);
+    _settingsBox?.put('showImageLoadAnimation', v);
+  }
+
+  /// Saved video player volume (0–100), restored on every new player.
+  double getPlayerVolume() {
+    return (_settingsBox?.get('player-volume', defaultValue: 100.0) as num?)?.toDouble() ?? 100.0;
+  }
+
+  /// Persist the current player volume so the next video resumes at it.
+  void setPlayerVolume(double volume) {
+    _settingsBox?.put('player-volume', volume);
   }
 
   /// Watch [showFavoritesOnly] and auto-switch [sortBy] between the
@@ -139,70 +125,112 @@ class AppState {
     });
   }
 
-  late final filteredCreators = computed<List<Creator>>(() {
-    var list = creators.value;
-    final query = searchQuery.value.toLowerCase();
-    if (query.isNotEmpty) {
-      list = list.where((c) => c.name.toLowerCase().contains(query)).toList();
-    }
-    if (showCachedOnly.value) {
-      final hasCache = <String>{};
-      for (final m in ImageMetaStore.instance.allEntries.values) {
-        if (m.creatorId != null) hasCache.add(m.creatorId!);
-      }
-      list = list.where((c) => hasCache.contains(c.id)).toList();
-    }
-    if (showFavoritesOnly.value) {
-      final favSet = favoritedIds.value;
-      list = list.where((c) => favSet.contains('${c.service}/${c.id}')).toList();
-    }
-    final favMap = favoriteCreatorMap.value;
-    final needsCacheSort = sortBy.value == SortBy.cacheSize;
-    final cacheBytes = needsCacheSort ? <String, int>{} : null;
-    if (needsCacheSort) {
-      for (final m in ImageMetaStore.instance.allEntries.values) {
-        if (m.creatorId != null) {
-          cacheBytes![m.creatorId!] = (cacheBytes[m.creatorId!] ?? 0) + m.bytes;
-        }
-      }
-    }
-    list = List.from(list)..sort((a, b) {
-      int cmp = switch (sortBy.value) {
-        SortBy.updated => b.updated.compareTo(a.updated),
-        SortBy.favorited => b.favorited.compareTo(a.favorited),
-        SortBy.indexed => b.indexed.compareTo(a.indexed),
-        SortBy.name => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-        SortBy.service => a.service.compareTo(b.service),
-        SortBy.cacheSize => (cacheBytes![b.id] ?? 0).compareTo(cacheBytes[a.id] ?? 0),
-        SortBy.favUpdated => () {
-          int millis(Creator c) {
-            final fc = favMap['${c.service}/${c.id}'];
-            if (fc != null) {
-              try {
-                return DateTime.parse(fc.updated).millisecondsSinceEpoch;
-              } catch (_) {}
-            }
-            return 0; // no post date → sort to bottom
-          }
-          return millis(b).compareTo(millis(a));
-        }(),
-        SortBy.favLastImported => () {
-          int millis(Creator c) {
-            final fc = favMap['${c.service}/${c.id}'];
-            if (fc?.lastImported != null) {
-              try {
-                return DateTime.parse(fc!.lastImported!).millisecondsSinceEpoch;
-              } catch (_) {}
-            }
-            return 0; // no import date → sort to bottom
-          }
-          return millis(b).compareTo(millis(a));
-        }(),
-      };
-      return sortAscending.value ? -cmp : cmp;
+  // ── Creator sort pipeline (worker isolate) ────────────────────────────────
+  // Filtering and sorting the 89K index runs in a long-lived worker isolate
+  // (CreatorSortService) so the UI thread never blocks on it. An effect
+  // watches the sort/filter inputs, sends a request, and applies the returned
+  // index order to [filteredCreators]. Stale replies are discarded via the
+  // request-id + base-identity guards.
+
+  final filteredCreators = signal<List<Creator>>([]);
+  final filtering = signal<bool>(false);
+
+  final _sortService = CreatorSortService.instance;
+  List<Creator>? _sentBase;
+  List<FavoriteCreator>? _sentFavs;
+  CreatorAliasIndex? _aliasIndex;
+  List<List<String>> _creatorExtras = const [];
+  int _workerGen = 0;
+  int _lastReqId = 0;
+  List<Creator>? _reqBase;
+  bool _dirty = false;
+  bool _inFlight = false;
+  bool _effectsReady = false;
+
+  void _initCreatorSortEffect() {
+    effect(() {
+      creators.value; // keep
+      // searchQuery.value;    // <-- REMOVE this line
+      sortBy.value;
+      sortAscending.value;
+      favoriteCreators.value;
+      showCachedOnly.value;
+      showFavoritesOnly.value;
+      _dirty = true;
+      _pump();
     });
-    return list;
-  });
+  }
+
+  Map<String, int> _cacheBytesSnapshot() {
+    final map = <String, int>{};
+    for (final m in ImageMetaStore.instance.allEntries.values) {
+      if (m.creatorId != null) {
+        map[m.creatorId!] = (map[m.creatorId!] ?? 0) + m.bytes;
+      }
+    }
+    return map;
+  }
+
+  void onSearchTrigger(String text) {
+    // The searchQuery signal already has the latest value (updated by SearchBar on every keystroke).
+    // We just need to signal the pipeline to run.
+    _dirty = true;
+    _pump();
+  }
+
+  Future<void> _pump() async {
+    if (_inFlight) return;
+    _inFlight = true;
+    try {
+      final all = creators.value;
+      if (!identical(_sentBase, all)) {
+        _workerGen++;
+        await _sortService.setBase(_workerGen, all, extraKeys: _creatorExtras);
+        _sentBase = all;
+      }
+      final favs = favoriteCreators.value;
+      if (!identical(_sentFavs, favs)) {
+        await _sortService.setFavs(favs);
+        _sentFavs = favs;
+      }
+      final reqId = ++_lastReqId;
+      _reqBase = all;
+      _dirty = false;
+      filtering.value = true;
+      try {
+        final order = await _sortService.request(
+          reqId: reqId,
+          gen: _workerGen,
+          query: CreatorAliasIndex.normalizeQuery(searchQuery.value),
+          sortBy: sortBy.value,
+          ascending: sortAscending.value,
+          favoritesOnly: showFavoritesOnly.value,
+          cachedOnly: showCachedOnly.value,
+          cacheBytes: showCachedOnly.value || sortBy.value == SortBy.cacheSize ? _cacheBytesSnapshot() : null,
+        );
+        if (reqId == _lastReqId && identical(_reqBase, creators.value)) {
+          final current = creators.value;
+          filteredCreators.value = [for (final i in order) current[i]];
+        } else {
+          // Inputs changed while the request was in flight — the reply is
+          // stale. Re-pump so a fresh request carries the current state.
+          _dirty = true;
+        }
+      } finally {
+        if (reqId == _lastReqId) filtering.value = false;
+      }
+    } catch (e, st) {
+      debugPrint('Creator sort pipeline failed: $e\n$st');
+      _sortService.restart();
+      _sentBase = null;
+      _sentFavs = null;
+      filtering.value = false;
+      _dirty = true;
+    } finally {
+      _inFlight = false;
+      if (_dirty) _pump();
+    }
+  }
 
   Future<void> loadCreators({bool refresh = false}) async {
     if (creatorsLoading.peek()) return;
@@ -215,6 +243,13 @@ class AppState {
       final all = await client.getCreators();
       debugPrint('Got ${all.length} creators');
       creators.value = all;
+      try {
+        _aliasIndex ??= await CreatorAliasIndex.loadFromAsset();
+        _creatorExtras = [for (final c in all) _aliasIndex!.extrasFor(c.service, c.id)];
+      } catch (e, st) {
+        debugPrint('Alias index unavailable: $e\n$st');
+        _creatorExtras = const [];
+      }
     } catch (e, st) {
       debugPrint('Failed to load creators: $e\n$st');
       creatorsError.value = '$e';
@@ -227,10 +262,7 @@ class AppState {
   /// The caller owns the returned list — no global state is written.
   Future<List<Post>> fetchCreatorPosts(Creator creator) async {
     final client = PawchiveClient.instance;
-    return client.getCreatorPosts(
-      service: creator.service,
-      creatorId: creator.id,
-    );
+    return client.getCreatorPosts(service: creator.service, creatorId: creator.id);
   }
 
   // ── Favorites management ─────────────────────────────────────────────────
@@ -253,8 +285,7 @@ class AppState {
 
       // Also load favorited posts
       final postFavs = await client.getFavoritePosts();
-      favoritePostIds.value =
-          postFavs.map((p) => '${p.service}/${p.user}/${p.id}').toSet();
+      favoritePostIds.value = postFavs.map((p) => '${p.service}/${p.user}/${p.id}').toSet();
       debugPrint('Loaded ${postFavs.length} favorite posts');
     } catch (e, st) {
       debugPrint('Failed to load favorites: $e\n$st');
@@ -280,9 +311,7 @@ class AppState {
 
   /// Remove a creator from favorites locally after the API call succeeds.
   void removeFavoriteCreator(String service, String id) {
-    favoriteCreators.value = favoriteCreators.peek()
-        .where((fc) => !(fc.service == service && fc.id == id))
-        .toList();
+    favoriteCreators.value = favoriteCreators.peek().where((fc) => !(fc.service == service && fc.id == id)).toList();
   }
 
   /// Add a post to favorites locally (key: "service/creatorId/postId").

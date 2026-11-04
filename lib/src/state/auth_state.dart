@@ -56,13 +56,12 @@ class AuthState {
     try {
       final client = PawchiveClient.instance;
       final result = await client.login(username: user, password: password);
-      if (result != null) {
+      if (result.success) {
         await _box.put('username', user);
         await _box.put('password', password);
 
         // Extract and persist the session cookie from the Set-Cookie header.
-        final setCookie = result['set_cookie']; // already String?
-        final sessionValue = _parseSessionCookie(setCookie);
+        final sessionValue = _parseSessionCookie(result.setCookie);
         if (sessionValue != null) {
           client.sessionCookie = sessionValue;
           await _box.put('sessionCookie', sessionValue);
@@ -75,7 +74,8 @@ class AuthState {
         AppState.instance.loadFavorites();
       } else {
         authStatus.value = AuthStatus.error;
-        errorMsg.value = 'Login failed — invalid credentials';
+        errorMsg.value = result.errorMessage ?? 'Login failed — invalid credentials';
+        debugPrint('Login rejected: ${result.errorMessage}');
       }
     } on DioException catch (e, st) {
       debugPrint('Login DioException: $e\n$st');

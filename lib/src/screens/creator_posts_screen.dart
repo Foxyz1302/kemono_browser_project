@@ -13,7 +13,7 @@ import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
 import 'package:leaf_widgets/leaf_widgets.dart';
-import 'package:pasteboard/pasteboard.dart';
+import 'package:fox_utils/fox_utils.dart';
 import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:signals/signals_flutter.dart';
@@ -96,6 +96,7 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
     final serviceLabel = serviceLabels[c.service] ?? c.service;
     final iconUrl = '${FileHelpers.baseUrl}/icons/${c.service}/${c.id}';
     final ts = Theme.of(context);
+    final dpr = MediaQuery.devicePixelRatioOf(context);
 
     // ── Shared heart & cache widgets ──────────────────────────────
     final heartWidget = SignalBuilder(
@@ -200,6 +201,7 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                             return LeafImage(
                               image: KemonoImageProvider(iconUrl),
                               fit: BoxFit.cover,
+                              cacheWidth: (48 * dpr).round(),
                               errorBuilder: (_, _, _) => Icon(Icons.person, color: Colors.white.withValues(alpha: 0.5), size: 28),
                               revealAnimation: showAnim ? const GradientRevealAnimation() : null,
                             );
@@ -273,6 +275,7 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                     return LeafImage(
                       image: KemonoImageProvider(iconUrl),
                       fit: BoxFit.cover,
+                      cacheWidth: (36 * dpr).round(),
                       errorBuilder: (_, _, _) => Icon(Icons.person, color: Colors.white.withValues(alpha: 0.5), size: 28),
                       revealAnimation: showAnim ? const GradientRevealAnimation() : null,
                     );
@@ -324,7 +327,8 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                     final p = _posts[i];
                     final imageFiles = p.attachments.where((f) => FileHelpers.isImage(f.name)).toList();
                     final otherFiles = p.attachments.where((f) => !FileHelpers.isImage(f.name)).toList();
-                    final hasSeparateThumb = p.file != null && FileHelpers.isImage(p.file!.name) && !p.attachments.any((f) => f.path == p.file!.path);
+                    final hasSeparateThumb =
+                        p.file != null && FileHelpers.isImage(p.file!.name) && !p.attachments.any((f) => f.path == p.file!.path);
                     final previewFiles = hasSeparateThumb ? [...imageFiles, ...otherFiles] : [...imageFiles.skip(1), ...otherFiles];
 
                     final thumbUrl = p.file != null && FileHelpers.isImage(p.file!.name)
@@ -339,6 +343,7 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                     return LayoutBuilder(
                       builder: (context, constraints) {
                         final halfTile = constraints.maxWidth * 0.5;
+                        final thumbCacheWidth = (halfTile * MediaQuery.devicePixelRatioOf(context)).round();
                         return Card(
                           clipBehavior: Clip.antiAlias,
                           child: Stack(
@@ -366,6 +371,7 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                                               return LeafImage(
                                                 image: KemonoImageProvider(thumbUrl, creatorId: c.id, postId: p.id),
                                                 fit: BoxFit.cover,
+                                                cacheWidth: thumbCacheWidth,
                                                 revealAnimation: showAnim ? const GradientRevealAnimation() : null,
                                                 loadingBuilder: (ctx, progress) => ShaderMask(
                                                   shaderCallback: (bounds) => const LinearGradient(
@@ -452,8 +458,13 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                                                         width: 48,
                                                         height: 48,
                                                         child: LeafImage(
-                                                          image: KemonoImageProvider('${FileHelpers.imgThumbBase}${f.path}', creatorId: c.id, postId: p.id),
+                                                          image: KemonoImageProvider(
+                                                            '${FileHelpers.imgThumbBase}${f.path}',
+                                                            creatorId: c.id,
+                                                            postId: p.id,
+                                                          ),
                                                           fit: BoxFit.cover,
+                                                          cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
                                                           errorBuilder: (_, _, _) => _fileIcon(f.name),
                                                         ),
                                                       ),
@@ -605,6 +616,7 @@ class PostDetailDialog extends StatelessWidget {
         : !isUnavailable && imageFiles.isNotEmpty
         ? '${FileHelpers.imgThumbBase}${imageFiles.first.path}'
         : null;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
 
     // debugPrint(
     //   "Post opened (id:${post.id})"
@@ -636,6 +648,7 @@ class PostDetailDialog extends StatelessWidget {
                         LeafImage(
                           image: KemonoImageProvider(bannerUrl, creatorId: creator.id, postId: post.id),
                           fit: BoxFit.cover,
+                          cacheHeight: (180 * dpr).round(),
                           height: .infinity,
                           width: .infinity,
                           errorBuilder: (_, e, _) {
@@ -903,14 +916,7 @@ class PostDetailDialog extends StatelessWidget {
                     final aspectRatio = ImageMetaStore.instance.lookup(url)?.aspectRatio ?? 1.0;
                     final idx = scrollableImages.indexOf(f);
                     return (
-                      child: ImageWrapTile(
-                        f: f,
-                        creator: creator,
-                        post: post,
-                        isUnavailable: isUnavailable,
-                        allFiles: allFiles,
-                        idx: idx,
-                      ),
+                      child: ImageWrapTile(f: f, creator: creator, post: post, isUnavailable: isUnavailable, allFiles: allFiles, idx: idx),
                       aspectRatio: aspectRatio,
                     );
                   }).toList(),
@@ -952,13 +958,7 @@ class PostDetailDialog extends StatelessWidget {
                     ? () {
                         final idx = allFiles.indexOf(f);
                         if (idx >= 0) {
-                          FullscreenImageViewerScreen.open(
-                            context,
-                            files: allFiles,
-                            index: idx,
-                            creatorId: creator.id,
-                            postId: post.id,
-                          );
+                          FullscreenImageViewerScreen.open(context, files: allFiles, index: idx, creatorId: creator.id, postId: post.id);
                         }
                       }
                     : null,
@@ -979,16 +979,12 @@ class PostDetailDialog extends StatelessWidget {
                       Expanded(
                         child: Text(
                           f.name ?? ext?.toUpperCase() ?? 'File',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: FileHelpers.isVideo(f.name) ? Colors.blue.shade200 : null,
-                          ),
+                          style: TextStyle(fontSize: 12, color: FileHelpers.isVideo(f.name) ? Colors.blue.shade200 : null),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (FileHelpers.isVideo(f.name))
-                        Icon(Icons.play_circle_outline, size: 16, color: Colors.blue.shade300),
+                      if (FileHelpers.isVideo(f.name)) Icon(Icons.play_circle_outline, size: 16, color: Colors.blue.shade300),
                     ],
                   ),
                 ),
@@ -1243,16 +1239,62 @@ class ImageWrapTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final fullUrl = '${FileHelpers.fileDataBase}${f.path}?f=${f.name ?? p.basename(f.path!)}';
     final thumbUrl = '${FileHelpers.imgThumbBase}${f.path}';
+    final isTouch =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.fuchsia;
+
+    final fullSize = ImageMetaStore.instance.lookup(KemonoImageProvider.canonicalUrl(fullUrl))?.bytes;
+    final thumbSize = ImageMetaStore.instance.lookup(thumbUrl)?.bytes;
+    String? sizeOf(int? bytes) => bytes == null ? null : ImageMetaStore.formatBytes(bytes);
 
     return LeafContextMenu(
       entries: [
-        ContextMenuAction(label: 'Copy image', icon: Icons.image, onTap: () => _copyImageBytes(fullUrl)),
-        ContextMenuAction(label: 'Copy image file', icon: Icons.insert_drive_file, onTap: () => _copyFilePath(fullUrl)),
-        ContextMenuAction(label: 'Copy image URL', icon: Icons.link, onTap: () => Clipboard.setData(ClipboardData(text: fullUrl))),
-        ContextMenuDivider(),
-        ContextMenuAction(label: 'Copy thumbnail', icon: Icons.image, onTap: () => _copyImageBytes(thumbUrl)),
-        ContextMenuAction(label: 'Copy thumbnail file', icon: Icons.insert_drive_file, onTap: () => _copyFilePath(thumbUrl)),
-        ContextMenuAction(label: 'Copy thumbnail URL', icon: Icons.link, onTap: () => Clipboard.setData(ClipboardData(text: thumbUrl))),
+        if (isTouch)
+          ContextMenuAsyncAction(
+            label: 'Copy image',
+            icon: Icons.image,
+            subtitle: sizeOf(fullSize),
+            doneLabel: 'Image copied',
+            task: (p) => _copyImageBytes(fullUrl, p),
+          ),
+        if (!isTouch)
+          ContextMenuAsyncAction(
+            label: 'Copy image file',
+            icon: Icons.insert_drive_file,
+            subtitle: sizeOf(fullSize),
+            doneLabel: 'File copied',
+            task: (_) => _copyFilePath(fullUrl),
+          ),
+        ContextMenuAsyncAction(
+          label: 'Copy image URL',
+          icon: Icons.link,
+          doneLabel: 'URL copied',
+          task: (_) => Clipboard.setData(ClipboardData(text: fullUrl)),
+        ),
+        const ContextMenuDivider(),
+        if (isTouch)
+          ContextMenuAsyncAction(
+            label: 'Copy thumbnail',
+            icon: Icons.image,
+            subtitle: sizeOf(thumbSize),
+            doneLabel: 'Thumbnail copied',
+            task: (p) => _copyImageBytes(thumbUrl, p),
+          ),
+        if (!isTouch)
+          ContextMenuAsyncAction(
+            label: 'Copy thumbnail file',
+            icon: Icons.insert_drive_file,
+            subtitle: sizeOf(thumbSize),
+            doneLabel: 'File copied',
+            task: (_) => _copyFilePath(thumbUrl),
+          ),
+        ContextMenuAsyncAction(
+          label: 'Copy thumbnail URL',
+          icon: Icons.link,
+          doneLabel: 'URL copied',
+          task: (_) => Clipboard.setData(ClipboardData(text: thumbUrl)),
+        ),
       ],
       child: Container(
         clipBehavior: Clip.antiAlias,
@@ -1260,7 +1302,9 @@ class ImageWrapTile extends StatelessWidget {
         child: LeafImage(
           image: KemonoImageProvider('${FileHelpers.imgThumbBase}${f.path}', creatorId: creator.id, postId: post.id),
           fit: BoxFit.cover,
-          width:.infinity ,height: .infinity,
+          cacheHeight: (250 * MediaQuery.devicePixelRatioOf(context)).round(),
+          width: .infinity,
+          height: .infinity,
           loadingBuilder: (context, progress) => SkeletonTile(progress: progress),
           errorBuilder: (_, _, retry) => AspectRatio(
             aspectRatio: 1.0,
@@ -1285,31 +1329,29 @@ class ImageWrapTile extends StatelessWidget {
     );
   }
 
-  Future<cache.FileInfo> _cachedFile(String url) async {
-    return ImageCacheService.instance
-        .getCachedFileStream(url)
-        .where((r) => r is cache.FileInfo)
-        .cast<cache.FileInfo>()
-        .first;
+  Future<cache.FileInfo> _cachedFile(String url, {ValueChanged<double>? onProgress}) async {
+    cache.FileInfo? info;
+    await for (final r in ImageCacheService.instance.getCachedFileStream(url)) {
+      if (r is cache.DownloadProgress) {
+        final progress = r.progress;
+        if (progress != null) onProgress?.call(progress);
+      } else if (r is cache.FileInfo) {
+        info = r;
+      }
+    }
+    if (info == null) throw StateError('No cached file for $url');
+    return info;
   }
 
-  Future<void> _copyImageBytes(String url) async {
-    try {
-      final info = await _cachedFile(url);
-      final bytes = await info.file.readAsBytes();
-      await Pasteboard.writeImage(bytes);
-    } catch (e, st) {
-      debugPrint('Copy image failed: $e\n$st');
-    }
+  Future<void> _copyImageBytes(String url, ValueChanged<double>? onProgress) async {
+    final info = await _cachedFile(url, onProgress: onProgress);
+    final bytes = await info.file.readAsBytes();
+    await ClipboardX.copyImage(bytes);
   }
 
   Future<void> _copyFilePath(String url) async {
-    try {
-      final info = await _cachedFile(url);
-      await Pasteboard.writeFiles([info.file.path]);
-    } catch (e, st) {
-      debugPrint('Copy file failed: $e\n$st');
-    }
+    final info = await _cachedFile(url);
+    await ClipboardX.copyFiles([info.file.path]);
   }
 }
 

@@ -63,6 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDesktopLayout(BuildContext context) {
+    debugPrint("building desktop layout");
     final cs = Theme.of(context).colorScheme;
     return Material(
       elevation: 4,
@@ -75,6 +76,40 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             const Text('Kemono', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             SizedBox(height: 32, child: VerticalDivider(width: 1, thickness: 1, color: cs.outlineVariant)),
+            // ── Favorites-only toggle ──────────────────────────────────────────
+            SignalBuilder(
+              builder: (context) {
+                final active = _app.showFavoritesOnly.value;
+                // return _FilterToggle(
+                //   icon: Icons.favorite,
+                //   label: 'Favorites only',
+                //   subtitle: 'Show only followed creators',
+                //   value: active,
+                //   onChanged: (v) => _app.showFavoritesOnly.value = v,
+                // );
+                return Material(
+                  clipBehavior: .antiAlias,
+                  borderRadius: .circular(100),
+                  elevation: 4,
+                  child: InkWell(
+                    onTap: () => _app.showFavoritesOnly.value = !_app.showFavoritesOnly.value,
+                    child: Row(
+                      children: [
+                        AnimatedFavoriteButton(
+                          isFavorited: active,
+                          onChanged: (newIsFavorited) => Future(() {
+                            _app.showFavoritesOnly.value = !newIsFavorited;
+                            return true;
+                          }),
+                        ),
+                        Text("Favorites", style: TextTheme.of(context).bodyLarge?.copyWith(color: cs.onSurface)),
+                        SizedBox(width: 10),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
             SignalBuilder(
               builder: (context) {
                 final loggedIn = AuthState.instance.authStatus.value == AuthStatus.loggedIn;
@@ -104,7 +139,11 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
             Expanded(
-              child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+              child: SearchBar(
+                querySignal: _app.searchQuery,
+                hintText: 'Search creators...',
+                onSearch: _app.onSearchTrigger, // <-- debounced callback
+              ),
             ),
             SignalBuilder(
               builder: (context) {
@@ -214,8 +253,31 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               },
             ),
+            SignalBuilder(
+              builder: (context) {
+                final active = _app.showFavoritesOnly.value;
+                // return _FilterToggle(
+                //   icon: Icons.favorite,
+                //   label: 'Favorites only',
+                //   subtitle: 'Show only followed creators',
+                //   value: active,
+                //   onChanged: (v) => _app.showFavoritesOnly.value = v,
+                // );
+                return AnimatedFavoriteButton(
+                  isFavorited: active,
+                  onChanged: (newIsFavorited) => Future(() {
+                    _app.showFavoritesOnly.value = newIsFavorited;
+                    return true;
+                  }),
+                );
+              },
+            ),
             Expanded(
-              child: SearchBar(querySignal: _app.searchQuery, hintText: 'Search creators...'),
+              child: SearchBar(
+                querySignal: _app.searchQuery,
+                hintText: 'Search creators...',
+                onSearch: _app.onSearchTrigger, // <-- debounced callback
+              ),
             ),
             LeafPopover(
               controller: _mobileOverflowCtrl,
@@ -272,6 +334,9 @@ class _HomeScreenState extends State<HomeScreen> {
             );
           }
           final creators = _app.filteredCreators.value;
+          // if (_app.filtering.value && _app.creators.value.isEmpty) {
+          //   return const Center(child: CircularProgressIndicator());
+          // }
           return CustomScrollView(
             slivers: [
               AdaptiveHeightSliverPersistentHeader(
@@ -314,7 +379,9 @@ class _HomeScreenState extends State<HomeScreen> {
               //     ),
               //   ),
               // ),
-              if (creators.isEmpty)
+              if (creators.isEmpty && _app.filtering.value)
+                const SliverFillRemaining(child: Center(child: CircularProgressIndicator()))
+              else if (creators.isEmpty)
                 const SliverFillRemaining(child: Center(child: Text('No creators found')))
               else
                 SliverPadding(
@@ -466,6 +533,9 @@ class CreatorTile extends StatelessWidget {
     final serviceLabel = serviceLabels[creator.service] ?? creator.service;
     final bannerUrl = '${FileHelpers.baseUrl}/banners/${creator.service}/${creator.id}';
     final iconUrl = '${FileHelpers.baseUrl}/icons/${creator.service}/${creator.id}';
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final bannerCacheWidth = (360 * dpr).round();
+    final iconCacheSize = (40 * dpr).round();
 
     return Material(
       clipBehavior: Clip.antiAlias,
@@ -480,6 +550,7 @@ class CreatorTile extends StatelessWidget {
               return LeafImage(
                 image: KemonoImageProvider(bannerUrl),
                 fit: BoxFit.cover,
+                cacheWidth: bannerCacheWidth,
                 errorBuilder: (_, _, _) => ColoredBox(color: serviceColor.withValues(alpha: 0.3)),
                 revealAnimation: showAnim ? const GradientRevealAnimation() : null,
               );
@@ -503,12 +574,14 @@ class CreatorTile extends StatelessWidget {
               spacing: 6,
               children: [
                 Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(color: serviceColor, borderRadius: BorderRadius.circular(4)),
-                  child: Text(
-                    serviceLabel,
-                    style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
+                IgnorePointer(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    decoration: BoxDecoration(color: serviceColor, borderRadius: BorderRadius.circular(4)),
+                    child: Text(
+                      serviceLabel,
+                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
+                    ),
                   ),
                 ),
                 Row(
@@ -529,6 +602,7 @@ class CreatorTile extends StatelessWidget {
                                     return LeafImage(
                                       image: KemonoImageProvider(iconUrl),
                                       fit: BoxFit.cover,
+                                      cacheWidth: iconCacheSize,
                                       errorBuilder: (_, _, _) => Icon(Icons.person, color: Colors.white.withValues(alpha: 0.5), size: 24),
                                       revealAnimation: showAnim ? const GradientRevealAnimation() : null,
                                     );
@@ -1178,19 +1252,6 @@ class _AccountMenuContent extends StatelessWidget {
                       ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: cs.onSurfaceVariant))
                       : null,
                   onTap: loading ? null : () => _app.loadFavorites(),
-                );
-              },
-            ),
-            // ── Favorites-only toggle ──────────────────────────────────────────
-            SignalBuilder(
-              builder: (context) {
-                final active = _app.showFavoritesOnly.value;
-                return _FilterToggle(
-                  icon: Icons.favorite,
-                  label: 'Favorites only',
-                  subtitle: 'Show only followed creators',
-                  value: active,
-                  onChanged: (v) => _app.showFavoritesOnly.value = v,
                 );
               },
             ),

@@ -12,12 +12,7 @@ class SearchBar extends StatefulWidget {
   final String hintText;
   final ValueChanged<String>? onSearch;
 
-  const SearchBar({
-    super.key,
-    required this.querySignal,
-    this.hintText = 'Search...',
-    this.onSearch,
-  });
+  const SearchBar({super.key, required this.querySignal, this.hintText = 'Search...', this.onSearch});
 
   @override
   State<SearchBar> createState() => _SearchBarState();
@@ -36,6 +31,7 @@ class _SearchBarState extends State<SearchBar> {
 
   @override
   void dispose() {
+    debugPrint('searchbar disposed');
     _debounce?.cancel();
     _controller.dispose();
     super.dispose();

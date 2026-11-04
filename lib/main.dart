@@ -12,6 +12,9 @@ import 'src/state/auth_state.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // The debug-only DevTools observer stringifies every signal value on each
+  // set — a 200-500ms toString pass for the 89K filteredCreators list.
+  SignalsObserver.instance = null;
   MediaKit.ensureInitialized();
   await AuthState.instance.init();
   final settingsBox = await Hive.openBox('kemono_settings');
