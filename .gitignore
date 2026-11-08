@@ -54,3 +54,8 @@ app.*.map.json
 /data/*.db
 /docs/my-kemono-favorites.json
 /test/read_hive.dart
+
+# Local secrets / personal data — never commit
+/.cookies/
+/.zcode/
+/data/*.db
