@@ -42,15 +42,21 @@ dependencies:
   hive_ce: ^2.19.3
   hive_ce_flutter: ^2.3.4
   fox_utils:
-    path: ../.shared/fox_utils
+    git:
+      url: https://github.com/Foxyz1302/fox_utils.git
+      ref: main
   persistent_header_adaptive: ^2.1.3
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
   leaf_widgets:
-    path: ../leaf_widgets
+    git:
+      url: https://github.com/Foxyz1302/leaf_widgets.git
+      ref: master
   video_adapter_media_kit:
-    path: ../video_adapter_media_kit
+    git:
+      url: https://github.com/Foxyz1302/video_adapter_media_kit.git
+      ref: master
 
 dev_dependencies:
   flutter_test:

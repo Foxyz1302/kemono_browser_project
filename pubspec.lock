@@ -379,10 +379,12 @@ packages:
   fox_utils:
     dependency: "direct main"
     description:
-      path: "../.shared/fox_utils"
-      relative: true
-    source: path
-    version: "0.1.9"
+      path: "."
+      ref: main
+      resolved-ref: "3af98f82b422aa209a27836a3aa0a63ff6347237"
+      url: "https://github.com/Foxyz1302/fox_utils.git"
+    source: git
+    version: "0.1.10"
   fwfh_cached_network_image:
     dependency: transitive
     description:
@@ -658,9 +660,11 @@ packages:
   leaf_widgets:
     dependency: "direct main"
     description:
-      path: "../leaf_widgets"
-      relative: true
-    source: path
+      path: "."
+      ref: master
+      resolved-ref: "8e7a56337159c0b968014c2d922bb0849ae4a3a1"
+      url: "https://github.com/Foxyz1302/leaf_widgets.git"
+    source: git
     version: "0.2.1"
   leak_tracker:
     dependency: transitive
@@ -1326,9 +1330,11 @@ packages:
   video_adapter_media_kit:
     dependency: "direct main"
     description:
-      path: "../video_adapter_media_kit"
-      relative: true
-    source: path
+      path: "."
+      ref: master
+      resolved-ref: "5381a82eaadadfc0df89fba6305a3616b4692c26"
+      url: "https://github.com/Foxyz1302/video_adapter_media_kit.git"
+    source: git
     version: "0.0.1"
   video_player:
     dependency: transitive
