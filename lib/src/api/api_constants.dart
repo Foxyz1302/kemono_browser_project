@@ -1,12 +1,19 @@
 /// HTTP headers required by the pawchive.pw ecosystem.
 ///
-/// `Referer` is required by img.pawchive.pw and file.pawchive.pw (CDN hotlink
-/// protection). The browser User-Agent is sent alongside it — some CDNs reject
-/// requests with a bare Dart/Dio User-Agent.
+/// The download hosts (`file.pawchive.pw`, `t1.pawchive.pw`) sit behind
+/// DDoS-Guard, which rejects browser-like User-Agents with 403 —
+/// "pretending to be a browser will result in a block". They ask for an
+/// identifiable UA with a way to contact the author, so keep this honest and
+/// replace `-dev` with a repo URL once one exists.
+///
+/// `Referer` is sent for the image CDN; it is not required today but costs
+/// nothing and guards against hotlink protection being re-enabled.
 class ApiConstants {
   ApiConstants._();
 
   static const String referer = 'https://pawchive.pw/';
-  static const String userAgent =
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+  static const String userAgent = 'KemonoBrowserProject-dev (+discord: foxyz)';
+
+  static const String fileDataBase = 'https://file.pawchive.pw/data';
+  static const String thumbDataBase = 'https://img.pawchive.pw/thumbnail/data';
 }

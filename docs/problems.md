@@ -1,5 +1,13 @@
 # App Problems & Improvement Opportunities
 
+> **Snapshot: 2026-07-27.** Partially out of date — re-verify each item before
+> acting. Known status as of 2026-11-04: #2 (login false-positive), #3 (logout
+> cookie) and #26 (Dio double-init) are fixed; #17 (`Accept: text/css`) is fixed
+> and was never required; several items (#3, #24, #32) describe the old
+> `dio_cookie_manager`/`PersistCookieJar` stack that no longer exists. Still
+> open: #21 (dead code), #22 (docs vs reality), #24 (blocking `restoreSession`),
+> #6 (cancel kills shared downloads), #7, #8, #9, #11–#16.
+
 Compiled from a comprehensive code review on 2026-07-27. Findings are grouped by severity. Each item includes the file location and enough context to reproduce or act on the issue.
 
 ---

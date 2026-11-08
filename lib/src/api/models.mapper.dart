@@ -509,12 +509,44 @@ class FileInfoMapper extends ClassMapperBase<FileInfo> {
     _$deferred,
     opt: true,
   );
+  static bool? _$previewOnly(FileInfo v) => v.previewOnly;
+  static const Field<FileInfo, bool> _f$previewOnly = Field(
+    'previewOnly',
+    _$previewOnly,
+    key: r'preview_only',
+    opt: true,
+  );
+  static String? _$tempUrl(FileInfo v) => v.tempUrl;
+  static const Field<FileInfo, String> _f$tempUrl = Field(
+    'tempUrl',
+    _$tempUrl,
+    key: r'temp_url',
+    opt: true,
+  );
+  static String? _$tempDownloadUrl(FileInfo v) => v.tempDownloadUrl;
+  static const Field<FileInfo, String> _f$tempDownloadUrl = Field(
+    'tempDownloadUrl',
+    _$tempDownloadUrl,
+    key: r'temp_download_url',
+    opt: true,
+  );
+  static String? _$tempExpires(FileInfo v) => v.tempExpires;
+  static const Field<FileInfo, String> _f$tempExpires = Field(
+    'tempExpires',
+    _$tempExpires,
+    key: r'temp_expires',
+    opt: true,
+  );
 
   @override
   final MappableFields<FileInfo> fields = const {
     #name: _f$name,
     #path: _f$path,
     #deferred: _f$deferred,
+    #previewOnly: _f$previewOnly,
+    #tempUrl: _f$tempUrl,
+    #tempDownloadUrl: _f$tempDownloadUrl,
+    #tempExpires: _f$tempExpires,
   };
 
   static FileInfo _instantiate(DecodingData data) {
@@ -522,6 +554,10 @@ class FileInfoMapper extends ClassMapperBase<FileInfo> {
       name: data.dec(_f$name),
       path: data.dec(_f$path),
       deferred: data.dec(_f$deferred),
+      previewOnly: data.dec(_f$previewOnly),
+      tempUrl: data.dec(_f$tempUrl),
+      tempDownloadUrl: data.dec(_f$tempDownloadUrl),
+      tempExpires: data.dec(_f$tempExpires),
     );
   }
 
@@ -582,7 +618,15 @@ extension FileInfoValueCopy<$R, $Out> on ObjectCopyWith<$R, FileInfo, $Out> {
 
 abstract class FileInfoCopyWith<$R, $In extends FileInfo, $Out>
     implements ClassCopyWith<$R, $In, $Out> {
-  $R call({String? name, String? path, bool? deferred});
+  $R call({
+    String? name,
+    String? path,
+    bool? deferred,
+    bool? previewOnly,
+    String? tempUrl,
+    String? tempDownloadUrl,
+    String? tempExpires,
+  });
   FileInfoCopyWith<$R2, $In, $Out2> $chain<$R2, $Out2>(Then<$Out2, $R2> t);
 }
 
@@ -599,11 +643,19 @@ class _FileInfoCopyWithImpl<$R, $Out>
     Object? name = $none,
     Object? path = $none,
     Object? deferred = $none,
+    Object? previewOnly = $none,
+    Object? tempUrl = $none,
+    Object? tempDownloadUrl = $none,
+    Object? tempExpires = $none,
   }) => $apply(
     FieldCopyWithData({
       if (name != $none) #name: name,
       if (path != $none) #path: path,
       if (deferred != $none) #deferred: deferred,
+      if (previewOnly != $none) #previewOnly: previewOnly,
+      if (tempUrl != $none) #tempUrl: tempUrl,
+      if (tempDownloadUrl != $none) #tempDownloadUrl: tempDownloadUrl,
+      if (tempExpires != $none) #tempExpires: tempExpires,
     }),
   );
   @override
@@ -611,6 +663,10 @@ class _FileInfoCopyWithImpl<$R, $Out>
     name: data.get(#name, or: $value.name),
     path: data.get(#path, or: $value.path),
     deferred: data.get(#deferred, or: $value.deferred),
+    previewOnly: data.get(#previewOnly, or: $value.previewOnly),
+    tempUrl: data.get(#tempUrl, or: $value.tempUrl),
+    tempDownloadUrl: data.get(#tempDownloadUrl, or: $value.tempDownloadUrl),
+    tempExpires: data.get(#tempExpires, or: $value.tempExpires),
   );
 
   @override

@@ -15,6 +15,7 @@ import '../api/pawchive_client.dart';
 import '../state/app_state.dart';
 import '../state/auth_state.dart';
 import '../utils.dart';
+import '../widgets/debug_sheet.dart';
 import 'creator_posts_screen.dart';
 import 'login_screen.dart';
 
@@ -74,8 +75,10 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Row(
           spacing: 6,
           children: [
-            const Text('Kemono', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            SizedBox(height: 32, child: VerticalDivider(width: 1, thickness: 1, color: cs.outlineVariant)),
+            GestureDetector(
+              onLongPress: () => showDebugSheet(context),
+              child: const Text('Kemono', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ),            SizedBox(height: 32, child: VerticalDivider(width: 1, thickness: 1, color: cs.outlineVariant)),
             // ── Favorites-only toggle ──────────────────────────────────────────
             SignalBuilder(
               builder: (context) {
@@ -284,7 +287,7 @@ class _HomeScreenState extends State<HomeScreen> {
               childAnchor: Alignment.bottomRight,
               popoverAnchor: Alignment.topRight,
               spacing: 6,
-              popoverBuilder: (context, _) => _MobileSortFilterContent(),
+              popoverBuilder: (context, ctrl) => _MobileSortFilterContent(onClose: ctrl.hide),
               child: IconButton(
                 icon: const Icon(Icons.tune, size: 20),
                 tooltip: 'Sort & Filter',
@@ -520,7 +523,11 @@ class FixedHeightGridDelegate extends SliverGridDelegate {
   }
 
   @override
-  bool shouldRelayout(FixedHeightGridDelegate oldDelegate) => true;
+  bool shouldRelayout(FixedHeightGridDelegate oldDelegate) =>
+      oldDelegate.maxCrossAxisExtent != maxCrossAxisExtent ||
+      oldDelegate.height != height ||
+      oldDelegate.mainAxisSpacing != mainAxisSpacing ||
+      oldDelegate.crossAxisSpacing != crossAxisSpacing;
 }
 
 class CreatorTile extends StatelessWidget {
@@ -943,8 +950,9 @@ class CreatorCacheDialog extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _MobileSortFilterContent extends StatelessWidget {
-  _MobileSortFilterContent();
+  _MobileSortFilterContent({required this.onClose});
 
+  final VoidCallback onClose;
   final _app = AppState.instance;
 
   @override
@@ -1020,6 +1028,17 @@ class _MobileSortFilterContent extends StatelessWidget {
                   value: active,
                   onChanged: (v) => _app.showCachedOnly.value = v,
                 );
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              leading: const Icon(Icons.bug_report_outlined, size: 18),
+              title: const Text('Diagnostics', style: TextStyle(fontSize: 13)),
+              onTap: () {
+                onClose();
+                showDebugSheet(context);
               },
             ),
           ],

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
+import 'api/api_constants.dart';
+
 class FileHelpers {
   FileHelpers._();
 
-  static const String imgThumbBase = 'https://img.pawchive.pw/thumbnail/data';
-  static const String fileDataBase = 'https://file.pawchive.pw/data';
+  static const String imgThumbBase = ApiConstants.thumbDataBase;
+  static const String fileDataBase = ApiConstants.fileDataBase;
   static const String baseUrl = 'https://pawchive.pw';
 
   static const Set<String> imageExtensions = {

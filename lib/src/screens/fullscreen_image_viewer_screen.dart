@@ -5,8 +5,12 @@ import 'dart:ui' show instantiateImageCodec;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:kemono_browser_project/src/api/api_constants.dart';
 import 'package:kemono_browser_project/src/api/models.dart';
+import 'package:kemono_browser_project/src/api/pawchive_client.dart';
 import 'package:kemono_browser_project/src/archive/archive_service.dart';
+import 'package:kemono_browser_project/src/cache/file_errors.dart';
+import 'package:kemono_browser_project/src/cache/file_size_gate.dart';
 import 'package:kemono_browser_project/src/cache/image_cache_service.dart';
 import 'package:kemono_browser_project/src/cache/image_meta_store.dart';
 import 'package:kemono_browser_project/src/cache/kemono_image_provider.dart';
@@ -101,12 +105,17 @@ class FullscreenImageViewerScreen extends StatelessWidget {
   // ---------------------------------------------------------------------------
 
   /// Open the fullscreen multi-image viewer for API-sourced images.
+  ///
+  /// [hasFull] mirrors [Post.hasFull]: when false the post has no stored or
+  /// proxied originals and only thumbnails exist.
   static void open(
     BuildContext context, {
     required List<FileInfo> files,
     required int index,
+    required String service,
     required String creatorId,
     required String postId,
+    bool hasFull = true,
     bool pending = false,
   }) {
     if (pending) return;
@@ -123,25 +132,31 @@ class FullscreenImageViewerScreen extends StatelessWidget {
       initialIndex: adjustedIndex,
       pageBuilder: (context, i) {
         final f = mediaFiles[i];
-        final ext = (f.name ?? '').split('.').last.toLowerCase();
-        final fullUrl = '${FileHelpers.fileDataBase}${f.path}${f.name != null ? '?f=${Uri.encodeComponent(f.name!)}' : ''}';
-        if (FileHelpers.videoExtensions.contains(ext)) {
-          return LeafVideoPage(
-            key: ValueKey('vid_$i'),
-            createAdapter: () => MediaKitAdapter(
-              initialVolume: AppState.instance.getPlayerVolume(),
-              onVolumeChanged: AppState.instance.setPlayerVolume,
-            ),
-            url: fullUrl,
-            headers: const {
-              'Referer': 'https://pawchive.pw/',
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            },
-          );
+        final url = f.downloadUrl(hasFull: hasFull) ?? f.tempDownloadUrl;
+        if (f.isVideo) {
+          return url == null
+              ? _UnavailablePage(file: f)
+              : LeafVideoPage(
+                  key: ValueKey('vid_$i'),
+                  createAdapter: () => MediaKitAdapter(
+                    initialVolume: AppState.instance.getPlayerVolume(),
+                    onVolumeChanged: AppState.instance.setPlayerVolume,
+                  ),
+                  url: url,
+                  headers: const {
+                    'Referer': ApiConstants.referer,
+                    'User-Agent': ApiConstants.userAgent,
+                  },
+                );
         }
-        final thumbUrl = '${FileHelpers.imgThumbBase}${f.path}';
-        return _FullscreenPage(key: ValueKey('img_$i'), url: fullUrl, thumbUrl: thumbUrl, creatorId: creatorId, postId: postId);
+        return _FullscreenPage(
+          key: ValueKey('img_$i'),
+          file: f,
+          service: service,
+          hasFull: hasFull,
+          creatorId: creatorId,
+          postId: postId,
+        );
       },
     );
   }
@@ -323,12 +338,20 @@ class _FullscreenPageViewInnerState extends State<_FullscreenPageViewInner> {
 // =============================================================================
 
 class _FullscreenPage extends StatefulWidget {
-  final String url;
-  final String thumbUrl;
+  final FileInfo file;
+  final String service;
+  final bool hasFull;
   final String creatorId;
   final String postId;
 
-  const _FullscreenPage({super.key, required this.url, required this.thumbUrl, required this.creatorId, required this.postId});
+  const _FullscreenPage({
+    super.key,
+    required this.file,
+    required this.service,
+    required this.hasFull,
+    required this.creatorId,
+    required this.postId,
+  });
 
   @override
   State<_FullscreenPage> createState() => _FullscreenPageState();
@@ -337,7 +360,10 @@ class _FullscreenPage extends StatefulWidget {
 class _FullscreenPageState extends State<_FullscreenPage> {
   /// Cached image provider — same instance across rebuilds prevents
   /// re-resolving the image on every build.
-  late final ImageProvider _imageProvider;
+  ImageProvider? _imageProvider;
+
+  String? _url;
+  String? _thumbUrl;
 
   ImageStream? _imageStream;
   ImageStreamListener? _imageListener;
@@ -346,7 +372,10 @@ class _FullscreenPageState extends State<_FullscreenPage> {
   File? _thumbnailFile;
   bool _hasLoaded = false;
   bool _fadeCompleted = false;
-  bool _errored = false;
+  bool _failed = false;
+  bool _refreshedOnce = false;
+  bool _refreshing = false;
+  int? _tooLargeBytes;
   double? _aspectRatio;
   bool _resolved = false;
 
@@ -358,7 +387,12 @@ class _FullscreenPageState extends State<_FullscreenPage> {
   @override
   void initState() {
     super.initState();
-    _imageProvider = KemonoImageProvider(widget.url, creatorId: widget.creatorId, postId: widget.postId);
+    _thumbUrl = widget.file.thumbnailUrl;
+    _url = widget.file.downloadUrl(hasFull: widget.hasFull);
+    final url = _url;
+    if (url != null) {
+      _imageProvider = KemonoImageProvider(url, creatorId: widget.creatorId, postId: widget.postId);
+    }
     _loadThumbnail();
   }
 
@@ -373,15 +407,24 @@ class _FullscreenPageState extends State<_FullscreenPage> {
 
   @override
   void dispose() {
-    if (_imageStream != null && _imageListener != null) {
-      _imageStream!.removeListener(_imageListener!);
-    }
+    _detachStream();
+    _imageInfo?.dispose();
     super.dispose();
   }
 
+  void _detachStream() {
+    if (_imageStream != null && _imageListener != null) {
+      _imageStream!.removeListener(_imageListener!);
+    }
+    _imageStream = null;
+    _imageListener = null;
+  }
+
   void _resolveImage() {
+    final provider = _imageProvider;
+    if (provider == null) return;
     final config = createLocalImageConfiguration(context);
-    final stream = _imageProvider.resolve(config);
+    final stream = provider.resolve(config);
     final listener = ImageStreamListener(
       (imageInfo, synchronousCall) {
         if (!mounted) return;
@@ -396,19 +439,111 @@ class _FullscreenPageState extends State<_FullscreenPage> {
           _totalBytes.value = chunk.expectedTotalBytes!;
         }
       },
-      onError: (exception, stackTrace) {
-        debugPrint('Fullscreen image error for ${widget.url}:\n$exception');
-        if (mounted) setState(() => _errored = true);
-      },
+      onError: _onImageError,
     );
     stream.addListener(listener);
     _imageStream = stream;
     _imageListener = listener;
   }
 
-  Future<void> _loadThumbnail() async {
+  void _onImageError(Object exception, StackTrace? stackTrace) {
+    debugPrint('Fullscreen image error for $_url:\n$exception');
+    if (!mounted) return;
+
+    if (exception is FileTooLargeException) {
+      setState(() {
+        _tooLargeBytes = exception.bytes;
+        _failed = false;
+      });
+      return;
+    }
+
+    // A temporary URL expired or lost its signature: re-fetch the post once and
+    // retry with the fresh URL.
+    if (exception is PawchiveFileException && exception.isExpiredSignature && !_refreshedOnce) {
+      _refreshUrls();
+      return;
+    }
+
+    setState(() => _failed = true);
+  }
+
+  Future<void> _refreshUrls() async {
+    if (_refreshing) return;
+    _refreshing = true;
+    _refreshedOnce = true;
     try {
-      final fileInfo = await ImageCacheService.instance.cache.getFileFromCache(widget.thumbUrl);
+      final post = await PawchiveClient.instance.getSinglePost(
+        service: widget.service,
+        creatorId: widget.creatorId,
+        postId: widget.postId,
+      );
+
+      FileInfo? match;
+      for (final f in post.allFiles) {
+        if (f.path != null && f.path == widget.file.path) {
+          match = f;
+          break;
+        }
+      }
+      final fresh = match ?? widget.file;
+      final url = fresh.downloadUrl(hasFull: post.hasFull);
+      if (url == null) {
+        if (mounted) setState(() => _failed = true);
+        return;
+      }
+
+      _detachStream();
+      if (!mounted) return;
+      setState(() {
+        _url = url;
+        _imageProvider = KemonoImageProvider(url, creatorId: widget.creatorId, postId: widget.postId);
+        _failed = false;
+        _imageInfo?.dispose();
+        _imageInfo = null;
+        _hasLoaded = false;
+        _fadeCompleted = false;
+      });
+      _resolveImage();
+    } catch (e, st) {
+      debugPrint('Fullscreen image URL refresh failed: $e\n$st');
+      if (mounted) setState(() => _failed = true);
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  void _retry() {
+    final url = _url;
+    final provider = _imageProvider;
+    if (url == null || provider == null) return;
+    _detachStream();
+    PaintingBinding.instance.imageCache.evict(provider);
+    ImageCacheService.instance.removeFile(url);
+    setState(() {
+      _failed = false;
+      _tooLargeBytes = null;
+      _refreshedOnce = false;
+      _imageInfo?.dispose();
+      _imageInfo = null;
+      _hasLoaded = false;
+      _fadeCompleted = false;
+    });
+    _resolveImage();
+  }
+
+  void _allowLarge() {
+    final url = _url;
+    if (url == null) return;
+    FileSizeGate.allow(url);
+    _retry();
+  }
+
+  Future<void> _loadThumbnail() async {
+    final thumb = _thumbUrl;
+    if (thumb == null) return;
+    try {
+      final fileInfo = await ImageCacheService.instance.cache.getFileFromCache(thumb);
       if (fileInfo != null && mounted) {
         setState(() => _thumbnailFile = fileInfo.file);
       }
@@ -419,16 +554,25 @@ class _FullscreenPageState extends State<_FullscreenPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_errored) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          spacing: 8,
-          children: [
-            Icon(Icons.broken_image_outlined, color: Colors.white.withValues(alpha: 0.4), size: 48),
-            Text('Image unavailable', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 14)),
-          ],
-        ),
+    if (_url == null) {
+      return _PreviewPane(thumbUrl: _thumbUrl, label: 'Original not available');
+    }
+
+    if (_tooLargeBytes != null) {
+      return _PreviewPane(
+        thumbUrl: _thumbUrl,
+        label: 'Load full · ${ImageMetaStore.formatBytes(_tooLargeBytes!)}',
+        onAction: _allowLarge,
+        actionIcon: Icons.download_outlined,
+      );
+    }
+
+    if (_failed) {
+      return _PreviewPane(
+        thumbUrl: _thumbUrl,
+        label: 'Preview · retry',
+        onAction: _retry,
+        actionIcon: Icons.refresh,
       );
     }
 
@@ -439,7 +583,7 @@ class _FullscreenPageState extends State<_FullscreenPage> {
 
         // Subscribe to metaReady for reactive aspect-ratio changes.
         ImageMetaStore.instance.metaReady.value;
-        final meta = ImageMetaStore.instance.lookup(widget.thumbUrl);
+        final meta = _thumbUrl == null ? null : ImageMetaStore.instance.lookup(_thumbUrl!);
         final ratio = meta?.aspectRatio ?? _aspectRatio ?? 1.0;
         final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, ratio);
 
@@ -548,6 +692,152 @@ class _FullscreenPageState extends State<_FullscreenPage> {
       ],
     );
   }
+}
+
+// =============================================================================
+// _PreviewPane — thumbnail fallback with an out-of-the-way action pill
+// =============================================================================
+
+class _PreviewPane extends StatefulWidget {
+  final String? thumbUrl;
+  final String label;
+  final VoidCallback? onAction;
+  final IconData actionIcon;
+
+  const _PreviewPane({
+    required this.thumbUrl,
+    required this.label,
+    this.onAction,
+    this.actionIcon = Icons.refresh,
+  });
+
+  @override
+  State<_PreviewPane> createState() => _PreviewPaneState();
+}
+
+class _PreviewPaneState extends State<_PreviewPane> {
+  ImageProvider? _provider;
+  ImageStream? _stream;
+  ImageStreamListener? _listener;
+  ImageInfo? _info;
+  bool _resolved = false;
+  double _ratio = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    final thumb = widget.thumbUrl;
+    if (thumb != null) {
+      _provider = KemonoImageProvider(thumb);
+      _ratio = ImageMetaStore.instance.lookup(thumb)?.aspectRatio ?? 1;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_resolved) return;
+    _resolved = true;
+    final provider = _provider;
+    if (provider == null) return;
+    final stream = provider.resolve(createLocalImageConfiguration(context));
+    final listener = ImageStreamListener(
+      (info, _) {
+        if (!mounted) return;
+        setState(() {
+          _info = info;
+          final r = info.image.width / info.image.height;
+          if (r.isFinite && r > 0) _ratio = r;
+        });
+      },
+      onError: (e, _) => debugPrint('PreviewPane thumbnail failed for ${widget.thumbUrl}: $e'),
+    );
+    stream.addListener(listener);
+    _stream = stream;
+    _listener = listener;
+  }
+
+  @override
+  void dispose() {
+    if (_stream != null && _listener != null) _stream!.removeListener(_listener!);
+    _info?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final vw = constraints.maxWidth;
+        final vh = constraints.maxHeight;
+        final (double iw, double ih) = FullscreenImageViewerScreen._containSize(vw, vh, _ratio);
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Center(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(15),
+                child: SizedBox(
+                  width: iw,
+                  height: ih,
+                  child: _info == null
+                      ? Container(color: Colors.white.withValues(alpha: 0.03))
+                      : RawImage(image: _info!.image, fit: BoxFit.contain, isAntiAlias: true),
+                ),
+              ),
+            ),
+            Positioned(
+              bottom: 24,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Material(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(999),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: widget.onAction,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(widget.onAction == null ? 14 : 12, 8, 14, 8),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.onAction != null) ...[
+                            Icon(widget.actionIcon, size: 16, color: Colors.white70),
+                            const SizedBox(width: 6),
+                          ],
+                          Text(
+                            widget.label,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _UnavailablePage extends StatelessWidget {
+  final FileInfo file;
+
+  const _UnavailablePage({required this.file});
+
+  @override
+  Widget build(BuildContext context) => _PreviewPane(
+        thumbUrl: file.thumbnailUrl,
+        label: 'Original not available',
+      );
 }
 
 // =============================================================================

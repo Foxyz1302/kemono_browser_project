@@ -9,6 +9,7 @@ import 'src/cache/image_cache_service.dart';
 import 'src/screens/home_screen.dart';
 import 'src/state/app_state.dart';
 import 'src/state/auth_state.dart';
+import 'src/state/flags_store.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,6 +24,7 @@ void main() async {
   await PawchiveClient.instance.init(onReLogin: () => AuthState.instance.reLogin());
   await ImageCacheService.instance.init();
   await ArchiveCache.instance.init();
+  await FlagsStore.instance.init();
   await AuthState.instance.restoreSession();
   runApp(const KemonoApp());
 }

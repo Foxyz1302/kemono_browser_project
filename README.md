@@ -1,17 +1,13 @@
 # kemono_browser_project
 
-A new Flutter project.
+Flutter desktop/mobile browser for `pawchive.pw` (Kemono-style API) — creator
+index, post feed, image viewer, archives.
 
-## Getting Started
+- Conventions, commands and architecture: [`AGENTS.md`](AGENTS.md)
+- Verified server behaviour: [`docs/server-contract.md`](docs/server-contract.md)
+- Doc index: [`docs/README.md`](docs/README.md)
 
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter run -d windows
+dart run build_runner build --delete-conflicting-outputs
+```

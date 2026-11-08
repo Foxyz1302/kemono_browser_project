@@ -260,9 +260,16 @@ class AppState {
 
   /// Fetch posts for a creator from the API.
   /// The caller owns the returned list — no global state is written.
-  Future<List<Post>> fetchCreatorPosts(Creator creator) async {
+  Future<List<Post>> fetchCreatorPosts(Creator creator, {int offset = 0}) async {
     final client = PawchiveClient.instance;
-    return client.getCreatorPosts(service: creator.service, creatorId: creator.id);
+    return client.getCreatorPosts(service: creator.service, creatorId: creator.id, offset: offset);
+  }
+
+  /// Total post count for a creator, or null when it cannot be determined
+  /// (single page, or the server-rendered markup changed).
+  Future<int?> fetchCreatorPostCount(Creator creator) async {
+    final client = PawchiveClient.instance;
+    return client.getCreatorPostCount(service: creator.service, creatorId: creator.id);
   }
 
   // ── Favorites management ─────────────────────────────────────────────────

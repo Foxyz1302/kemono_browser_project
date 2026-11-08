@@ -5,7 +5,10 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../utils.dart';
+import 'api_constants.dart';
+import 'app_errors.dart';
 import 'interceptors/auth_interceptor.dart';
+import 'interceptors/error_descriptor_interceptor.dart';
 import 'interceptors/retry_interceptor.dart';
 import 'models.dart';
 
@@ -34,7 +37,10 @@ class PawchiveClient {
       validateStatus: (status) => status != null && status < 500,
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 30),
-      headers: {'Accept': 'application/json'},
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': ApiConstants.userAgent,
+      },
     ));
 
     dio.interceptors.addAll([
@@ -50,6 +56,7 @@ class PawchiveClient {
       ),
       if (onReLogin != null)
         AuthInterceptor(dio: dio, onReLogin: onReLogin),
+      ErrorDescriptorInterceptor(),
       RetryInterceptor(),
     ]);
   }
@@ -160,39 +167,34 @@ class PawchiveClient {
   void _expectOk(Response response, String path) {
     final status = response.statusCode ?? 0;
     if (status < 200 || status >= 300) {
-      throw PawchiveApiException(status, path);
+      final body = summarizeBody(response.data);
+      throw PawchiveApiException(status, path, body: body, reason: classifyBody(body));
     }
   }
 
   /// Fetch all creators from the index.
-  ///
-  /// NOTE: This endpoint requires `Accept: text/css` — it returns JSON regardless
-  /// but rejects requests with `Accept: application/json`. This is a known server
-  /// quirk; keep `text/css` until the upstream issue is resolved.
   Future<List<Creator>> getCreators({int? offset}) async {
     final response = await dio.get(
       '$_apiPrefix/creators',
       queryParameters: offset != null ? {'o': offset} : null,
-      options: Options(headers: {'Accept': 'text/css'}),
     );
     _expectOk(response, '/creators');
     final list = response.data as List;
     return list.map((j) => CreatorMapper.fromMap(j as Map<String, dynamic>)).toList();
   }
 
-  /// Remove attachments with null [FileInfo.path] — the API sometimes
-  /// returns attachments missing the `path` field, which are unusable.
-  /// Also clears the main [Post.file] if its path is null.
+  /// Remove attachments with neither a [FileInfo.path] nor a signed
+  /// [FileInfo.tempUrl] — nothing can be built from them.
   Post _sanitizePost(Post post) {
     var changed = false;
     final filtered = post.attachments.where((f) {
-      if (f.path == null) {
+      if (f.path == null && f.tempUrl == null) {
         changed = true;
         return false;
       }
       return true;
     }).toList();
-    final mainFile = post.file?.path != null ? post.file : null;
+    final mainFile = (post.file?.path != null || post.file?.tempUrl != null) ? post.file : null;
     if (mainFile != post.file) changed = true;
     if (!changed) return post;
     return post.copyWith(attachments: filtered, file: mainFile);
@@ -201,11 +203,39 @@ class PawchiveClient {
   Future<List<Post>> getCreatorPosts({
     required String service,
     required String creatorId,
+    int offset = 0,
   }) async {
-    final response = await dio.get('$_apiPrefix/$service/user/$creatorId');
+    final response = await dio.get(
+      '$_apiPrefix/$service/user/$creatorId',
+      queryParameters: offset > 0 ? {'o': offset} : null,
+    );
     _expectOk(response, '/$service/user/$creatorId');
     final list = response.data as List;
     return list.map((j) => _sanitizePost(PostMapper.fromMap(j as Map<String, dynamic>))).toList();
+  }
+
+  /// Total post count for a creator, scraped from the server-rendered creator
+  /// page. The JSON API exposes no count (no header, no wrapper, and
+  /// `?count=true` / `/count` are ignored or 404), but the page prints
+  /// "Showing 1 - 50 of N" and only when there is more than one page. Returns
+  /// null when the creator fits on a single page or the markup changes.
+  Future<int?> getCreatorPostCount({
+    required String service,
+    required String creatorId,
+  }) async {
+    final response = await dio.get(
+      '/$service/user/$creatorId',
+      options: Options(
+        responseType: ResponseType.plain,
+        headers: {'Accept': 'text/html'},
+      ),
+    );
+    _expectOk(response, '/$service/user/$creatorId');
+    final html = response.data;
+    if (html is! String) return null;
+    final match = RegExp(r'Showing\s+\d+\s*-\s*\d+\s+of\s+(\d+)').firstMatch(html);
+    if (match == null) return null;
+    return int.tryParse(match.group(1)!);
   }
 
   Future<Post> getSinglePost({
@@ -277,10 +307,20 @@ class PawchiveApiException implements Exception {
   final int statusCode;
   final String path;
 
-  const PawchiveApiException(this.statusCode, this.path);
+  /// Truncated response body — the server explains 4xx/5xx failures in it.
+  final String? body;
+
+  /// Short classification of [body] when one is recognized.
+  final String? reason;
+
+  const PawchiveApiException(this.statusCode, this.path, {this.body, this.reason});
 
   @override
-  String toString() => 'PawchiveApiException: $statusCode on $path';
+  String toString() {
+    final why = reason == null ? '' : ' ($reason)';
+    final b = body == null ? '' : '\n  body: $body';
+    return 'PawchiveApiException: $statusCode$why on $path$b';
+  }
 }
 
 /// Outcome of a [PawchiveClient.login] attempt.

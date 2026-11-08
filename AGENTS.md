@@ -85,6 +85,10 @@ POST /account/login
 
 ### Server Favorites
 
+> Status: implemented (API calls + in-memory id set). The local filesystem
+> mirror described under "Favorites Merge Strategy" / "Storage" does **not**
+> exist yet.
+
 All verified working (cookie auth):
 
 | Method | Endpoint | Response |
@@ -99,6 +103,10 @@ All verified working (cookie auth):
 Creator `updated` field is an ISO 8601 string — this is the timestamp to diff against `lastChecked` for new post detection.
 
 ### New Post Detection
+
+> Status: implemented for the creator page only (`lastChecked` persisted in
+> `{documents}/last_checked.json`). The favorites-tab "New" badge below is not
+> built, and `_meta.json` is not used anywhere.
 
 ```
 On favorites tab open:
@@ -115,12 +123,20 @@ On creator page open:
 
 ### Favorites Merge Strategy
 
+> Status: **not implemented.** No `_meta.json`, no favorites tree, no
+> `viewedAt`/`archived` fields exist in `lib/`. This section is the intended
+> design, not current behaviour.
+
 - **Server** is source of truth for "which creators/posts are favorited" (the set)
 - **Local filesystem** (_meta.json) stores state metadata (viewedAt, archived, notes)
 - On login sync: fetch server favorites, reconcile with local tree (delete local favorites not on server, add local _meta for server favorites that exist but have no local entry)
 - Favorites tree is always a subset of server favorites + extra local metadata
 
 ### Storage
+
+> Status: **not implemented** beyond the cache directory. Favorites/`_meta.json`
+> is a design target; the app currently stores only image cache, archive cache,
+> Hive settings and `last_checked.json`.
 
 ```
 {appDocDir}/
@@ -173,11 +189,16 @@ Image(image: KemonoImageProvider(url, creatorId: ..., postId: ...))
 | Content | URL |
 |---------|-----|
 | Thumbnails | `https://img.pawchive.pw/thumbnail/data{path}` |
-| Full images | `https://file.pawchive.pw/data{path}?f={filename}` |
+| Original file | `temp_url` when the file is **temporary**; otherwise `https://file.pawchive.pw/data{path}`; `null` when the post `has_full == false` |
 | Banners | `https://pawchive.pw/banners/{service}/{id}` |
 | Icons | `https://pawchive.pw/icons/{service}/{id}` |
 
-All paths from API start with `/`. Referer header is required for `img.*` and `file.*` subdomains.
+All paths from API start with `/`. Use `FileInfo.downloadUrl(hasFull: post.hasFull)`
+— never build the file host URL by hand. Three file states and the UA rules are
+in [`docs/server-contract.md`](docs/server-contract.md).
+
+`Referer` is sent but **not currently enforced** by any host; the browser-style
+User-Agent that `file.*` used to want is now actively blocked — see the contract doc.
 
 ### ImageMetaStore
 
@@ -332,14 +353,12 @@ kemono_favorited: int
 
 ### Image Loading
 - Custom `KemonoImageProvider` wrapping `flutter_cache_manager` with `DioFileService`
-- Thumbnails load from `img.pawchive.pw/thumbnail/data{path}`; on tap, full-size from `file.pawchive.pw/data{path}?f={filename}`
-- Referer + User-Agent headers required for `img.*` and `file.*` subdomains
-- Cache: 30-day stale period, max 1000 objects, stored in `{tempDir}/kemono_cache/`
-- ImageMetaStore tracks per-creator/post cache stats (dims, bytes) for UI badges and cache dialogs
-- Archive: copy from cache to `favorites/{service}/{creator}/{post}/files/`
-- Non-archived images eventually evicted by cache manager
+- Thumbnails load from `img.pawchive.pw/thumbnail/data{path}`; on tap, the original comes from `FileInfo.downloadUrl()` (signed `temp_url` or `file.pawchive.pw/data{path}`)
+- `DioFileService` sends the app UA (browser UAs are blocked), reads 1 KB of any error body into `AppErrors`, and rejects files above `FileSizeGate.thresholdBytes` (default 20 MB) before the body transfers
+- The image viewer falls back to the thumbnail with a small pill when the original is unavailable, too large, or still loading; a signature/expiry 403 triggers one post re-fetch and retry
+- Favorites/files tree does not exist yet (see Storage above)
 - `MyImageViewerScreen` — two static entry points:
-  - `open(context, files, index, creatorId, postId)` — URL-based images from API, dark overlay, PageView, nav arrows, progress skeleton, AnimatedAspectRatio
+  - `open(context, files, index, service, creatorId, postId, hasFull)` — URL-based images from API, dark overlay, PageView, nav arrows, progress skeleton
   - `openArchive(context, data, fileName, archiveName?)` — raw `Uint8List` images from archive extraction, dark overlay, InteractiveViewer, AppBar with filename
 
 ### Archive Management

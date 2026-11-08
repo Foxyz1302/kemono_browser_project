@@ -1,7 +1,13 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import '../api/api_constants.dart';
+import '../api/app_errors.dart';
+import 'file_errors.dart';
+import 'file_size_gate.dart';
 
 class DioFileService extends FileService {
   final Dio _dio;
@@ -13,6 +19,9 @@ class DioFileService extends FileService {
               responseType: ResponseType.stream,
               connectTimeout: const Duration(seconds: 15),
               receiveTimeout: const Duration(seconds: 30),
+              // Status is inspected below instead of throwing, so the body can
+              // be read and reported before the failure is surfaced.
+              validateStatus: (_) => true,
               headers: {
                 'Referer': ApiConstants.referer,
                 'User-Agent': ApiConstants.userAgent,
@@ -36,6 +45,21 @@ class DioFileService extends FileService {
         ),
         cancelToken: token,
       );
+
+      final status = response.statusCode ?? 0;
+      if (status < 200 || status >= 300) {
+        final snippet = await _readSnippet(response.data);
+        final reason = classifyBody(snippet);
+        AppErrors.instance.addFile(url, status, snippet);
+        throw PawchiveFileException(status, url, reason: reason, body: snippet);
+      }
+
+      final length = int.tryParse(response.headers.value('content-length') ?? '');
+      if (length != null && FileSizeGate.shouldBlock(url, length)) {
+        await _abort(response.data);
+        throw FileTooLargeException(url, length);
+      }
+
       return DioFileServiceResponse(response);
     } finally {
       // Guard: only remove THIS request's token, not a newer one that may have
@@ -44,6 +68,35 @@ class DioFileService extends FileService {
       if (identical(_activeTokens[url], token)) {
         _activeTokens.remove(url);
       }
+    }
+  }
+
+  /// Reads at most [limit] bytes of an error body. The stream is cancelled as
+  /// soon as the limit is reached, so this never buffers a large payload.
+  static Future<String?> _readSnippet(ResponseBody? body, {int limit = 1024}) async {
+    if (body == null) return null;
+    final buffer = <int>[];
+    try {
+      await for (final chunk in body.stream) {
+        buffer.addAll(chunk);
+        if (buffer.length >= limit) break;
+      }
+    } catch (e, st) {
+      debugPrint('DioFileService: failed to read error body: $e\n$st');
+      return null;
+    }
+    if (buffer.isEmpty) return null;
+    final text = utf8.decode(buffer, allowMalformed: true).replaceAll(RegExp(r'\s+'), ' ').trim();
+    return text.length <= limit ? text : '${text.substring(0, limit)}…';
+  }
+
+  /// Drops the connection without transferring the body.
+  static Future<void> _abort(ResponseBody? body) async {
+    if (body == null) return;
+    try {
+      await body.stream.listen(null).cancel();
+    } catch (e, st) {
+      debugPrint('DioFileService: failed to abort body: $e\n$st');
     }
   }
 }

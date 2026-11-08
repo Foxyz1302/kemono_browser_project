@@ -20,9 +20,12 @@ import 'package:signals/signals_flutter.dart';
 
 import '../state/app_state.dart';
 import '../state/auth_state.dart';
+import '../state/flags_store.dart';
 import '../utils.dart';
+import '../widgets/flag_post_dialog.dart';
 import 'home_screen.dart';
 import 'fullscreen_image_viewer_screen.dart';
+import '../widgets/post_paginator.dart';
 
 class CreatorPostsScreen extends SignalStatefulWidget {
   final Creator creator;
@@ -39,45 +42,97 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
   bool _loading = true;
   Set<String> _newPostIds = {};
 
+  static const int _pageSize = 50;
+  int _page = 1;
+  int? _totalPosts;
+  int _requestSeq = 0;
+  final _scrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
-    _loadPosts();
+    _loadPage(1);
   }
 
-  Future<void> _loadPosts() async {
-    _loading = true;
-    setState(() {});
-    try {
-      final posts = await _app.fetchCreatorPosts(widget.creator);
-      _posts = posts;
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
-      // Compute new post IDs BEFORE updating lastChecked so the
-      // "new" star renders for this visit.
-      final lastChecked = _app.getLastChecked(widget.creator.service, widget.creator.id);
-      if (lastChecked != null) {
-        _newPostIds = posts
-            .where((p) {
-              try {
-                return DateTime.parse(p.published).isAfter(DateTime.parse(lastChecked));
-              } catch (_) {
-                return false;
-              }
-            })
-            .map((p) => p.id)
-            .toSet();
-      } else {
-        _newPostIds = {};
+  Future<void> _loadPage(int page) async {
+    final seq = ++_requestSeq;
+    setState(() => _loading = _posts.isEmpty);
+    try {
+      final posts = await _app.fetchCreatorPosts(widget.creator, offset: (page - 1) * _pageSize);
+      if (!mounted || seq != _requestSeq) return;
+
+      if (posts.isEmpty && page > 1) {
+        // Past the last page — the total was wrong or unknown. Clamp and stop.
+        setState(() => _totalPosts = (page - 1) * _pageSize);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No posts on page $page')));
+        return;
       }
 
-      _app.updateLastChecked(widget.creator.service, widget.creator.id);
+      int? total = _totalPosts;
+      if (total == null) {
+        try {
+          total = await _app.fetchCreatorPostCount(widget.creator);
+        } catch (e, st) {
+          debugPrint('Failed to read post count for ${widget.creator.id}: $e\n$st');
+          total = null;
+        }
+        if (!mounted || seq != _requestSeq) return;
+        if (total != null && total <= _pageSize) total = null;
+      }
+
+      setState(() {
+        _posts = posts;
+        _page = page;
+        _totalPosts = total;
+      });
+
+      if (page == 1) {
+        _computeNewPosts(posts);
+        _app.updateLastChecked(widget.creator.service, widget.creator.id);
+      }
     } catch (e, st) {
-      debugPrint('Failed to load creator posts: $e\n$st');
-      _posts = [];
-      _newPostIds = {};
+      debugPrint('Failed to load creator posts page $page: $e\n$st');
+      if (!mounted || seq != _requestSeq) return;
+      if (page == 1) {
+        setState(() {
+          _posts = [];
+          _newPostIds = {};
+        });
+      }
+    } finally {
+      if (mounted && seq == _requestSeq) setState(() => _loading = false);
     }
-    _loading = false;
-    setState(() {});
+  }
+
+  void _goToPage(int page) {
+    _loadPage(page);
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(0, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    }
+  }
+
+  void _computeNewPosts(List<Post> posts) {
+    final lastChecked = _app.getLastChecked(widget.creator.service, widget.creator.id);
+    if (lastChecked == null) {
+      _newPostIds = {};
+      return;
+    }
+    _newPostIds = posts
+        .where((p) {
+          try {
+            return DateTime.parse(p.published).isAfter(DateTime.parse(lastChecked));
+          } catch (_) {
+            return false;
+          }
+        })
+        .map((p) => p.id)
+        .toSet();
   }
 
   @override
@@ -90,7 +145,9 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
     }
 
     final hasData = _posts.isNotEmpty;
-    debugPrint("Creator: ${c.name} (id:${c.id})\nservice: ${c.service}");
+    // A short first page means there is nothing to page to, and an unknown
+    // total can't drive a pager — hide it in both cases.
+    final showPaginator = hasData && (_totalPosts != null || _posts.length >= _pageSize);
 
     final serviceColor = serviceColors[c.service] ?? Colors.grey;
     final serviceLabel = serviceLabels[c.service] ?? c.service;
@@ -300,6 +357,7 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
         top: true,
         bottom: false,
         child: CustomScrollView(
+          controller: _scrollController,
           slivers: [
             SliverPersistentHeader(
               pinned: true,
@@ -310,6 +368,18 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                 minHeight: kToolbarHeight,
               ),
             ),
+            if (showPaginator)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+                sliver: SliverToBoxAdapter(
+                  child: PostPaginator(
+                    page: _page,
+                    pageSize: _pageSize,
+                    total: _totalPosts,
+                    onPage: _goToPage,
+                  ),
+                ),
+              ),
             if (!hasData && !_loading)
               const SliverFillRemaining(child: Center(child: Text('No posts found')))
             else
@@ -329,7 +399,11 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                     final otherFiles = p.attachments.where((f) => !FileHelpers.isImage(f.name)).toList();
                     final hasSeparateThumb =
                         p.file != null && FileHelpers.isImage(p.file!.name) && !p.attachments.any((f) => f.path == p.file!.path);
-                    final previewFiles = hasSeparateThumb ? [...imageFiles, ...otherFiles] : [...imageFiles.skip(1), ...otherFiles];
+                    // Only fanbox uses "the first attachment is the post banner";
+                    // on patreon the first image is usually real content.
+                    final skipBannerImage = !hasSeparateThumb && p.service == 'fanbox';
+                    final previewFiles =
+                        skipBannerImage ? [...imageFiles.skip(1), ...otherFiles] : [...imageFiles, ...otherFiles];
 
                     final thumbUrl = p.file != null && FileHelpers.isImage(p.file!.name)
                         ? '${FileHelpers.imgThumbBase}${p.file!.path}'
@@ -338,7 +412,6 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                         : null;
                     final isPending = p.previewState == 'pending';
                     final isKemonoUnavailable = !isPending && p.hasFull == false;
-                    final isUnavailable = isPending || isKemonoUnavailable;
 
                     return LayoutBuilder(
                       builder: (context, constraints) {
@@ -443,15 +516,15 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                                                 if (FileHelpers.isImage(f.name)) {
                                                   final fileIdx = p.attachments.indexOf(f);
                                                   return GestureDetector(
-                                                    onTap: isUnavailable
-                                                        ? null
-                                                        : () => FullscreenImageViewerScreen.open(
-                                                            context,
-                                                            files: p.attachments,
-                                                            index: fileIdx >= 0 ? fileIdx : j,
-                                                            creatorId: c.id,
-                                                            postId: p.id,
-                                                          ),
+                                                    onTap: () => FullscreenImageViewerScreen.open(
+                                                      context,
+                                                      files: p.attachments,
+                                                      index: fileIdx >= 0 ? fileIdx : j,
+                                                      service: c.service,
+                                                      creatorId: c.id,
+                                                      postId: p.id,
+                                                      hasFull: p.hasFull,
+                                                    ),
                                                     child: ClipRRect(
                                                       borderRadius: BorderRadius.circular(6),
                                                       child: SizedBox(
@@ -525,6 +598,18 @@ class _CreatorPostsScreenState extends State<CreatorPostsScreen> {
                       },
                     );
                   },
+                ),
+              ),
+            if (showPaginator)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(12, 2, 12, 16),
+                sliver: SliverToBoxAdapter(
+                  child: PostPaginator(
+                    page: _page,
+                    pageSize: _pageSize,
+                    total: _totalPosts,
+                    onPage: _goToPage,
+                  ),
                 ),
               ),
           ],
@@ -613,7 +698,7 @@ class PostDetailDialog extends StatelessWidget {
     final serviceColor = serviceColors[creator.service] ?? Colors.grey;
     final bannerUrl = !isUnavailable && post.file != null && FileHelpers.isImage(post.file!.name)
         ? '${FileHelpers.imgThumbBase}${post.file!.path}'
-        : !isUnavailable && imageFiles.isNotEmpty
+        : !isUnavailable && post.service == 'fanbox' && imageFiles.isNotEmpty
         ? '${FileHelpers.imgThumbBase}${imageFiles.first.path}'
         : null;
     final dpr = MediaQuery.devicePixelRatioOf(context);
@@ -662,7 +747,15 @@ class PostDetailDialog extends StatelessWidget {
                             final bannerFiles = post.file != null && FileHelpers.isImage(post.file!.name)
                                 ? [post.file!, ...post.attachments.where((f) => f.path != post.file?.path)]
                                 : post.attachments;
-                            FullscreenImageViewerScreen.open(context, files: bannerFiles, index: 0, creatorId: creator.id, postId: post.id);
+                            FullscreenImageViewerScreen.open(
+                              context,
+                              files: bannerFiles,
+                              index: 0,
+                              service: creator.service,
+                              creatorId: creator.id,
+                              postId: post.id,
+                              hasFull: post.hasFull,
+                            );
                           },
                         ),
                       ],
@@ -723,13 +816,24 @@ class PostDetailDialog extends StatelessWidget {
                     PopupMenuButton<String>(
                       icon: const Icon(Icons.more_vert, color: Colors.white),
                       color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      onSelected: (value) {
+                      onSelected: (value) async {
                         final url = '${FileHelpers.baseUrl}/${post.service}/user/${post.user}/post/${post.id}';
                         switch (value) {
                           case 'browser':
                             launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
                           case 'copy':
                             Clipboard.setData(ClipboardData(text: url));
+                          case 'flag':
+                            final key = '${post.service}/${post.user}/${post.id}';
+                            final saved = await showFlagPostDialog(
+                              context,
+                              post,
+                              existing: FlagsStore.instance.forKey(key)?.comment,
+                            );
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(saved ? 'Flag saved' : 'Flag updated')),
+                            );
                         }
                       },
                       itemBuilder: (_) => [
@@ -747,6 +851,15 @@ class PostDetailDialog extends StatelessWidget {
                           child: ListTile(
                             leading: Icon(Icons.copy),
                             title: Text('Copy link'),
+                            contentPadding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                        const PopupMenuItem(
+                          value: 'flag',
+                          child: ListTile(
+                            leading: Icon(Icons.flag_outlined),
+                            title: Text('Flag post'),
                             contentPadding: EdgeInsets.zero,
                             visualDensity: VisualDensity.compact,
                           ),
@@ -916,7 +1029,7 @@ class PostDetailDialog extends StatelessWidget {
                     final aspectRatio = ImageMetaStore.instance.lookup(url)?.aspectRatio ?? 1.0;
                     final idx = scrollableImages.indexOf(f);
                     return (
-                      child: ImageWrapTile(f: f, creator: creator, post: post, isUnavailable: isUnavailable, allFiles: allFiles, idx: idx),
+                      child: ImageWrapTile(f: f, creator: creator, post: post, allFiles: allFiles, idx: idx),
                       aspectRatio: aspectRatio,
                     );
                   }).toList(),
@@ -940,7 +1053,25 @@ class PostDetailDialog extends StatelessWidget {
             final ext = FileHelpers.fileExtension(f.name);
             final isArchive = ext != null && archiveExts.contains(ext);
             if (isArchive) {
-              final fileUrl = '${FileHelpers.fileDataBase}${f.path}?f=${f.name ?? ext.toUpperCase()}';
+              final fileUrl = f.downloadUrl(hasFull: post.hasFull);
+              if (fileUrl == null) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    spacing: 8,
+                    children: [
+                      Icon(Icons.folder_zip, color: Theme.of(context).colorScheme.outline),
+                      Expanded(
+                        child: Text(
+                          f.name ?? 'archive',
+                          style: TextStyle(color: Theme.of(context).colorScheme.outline, fontSize: 13),
+                        ),
+                      ),
+                      Text('not available', style: TextStyle(color: Theme.of(context).colorScheme.outline, fontSize: 11)),
+                    ],
+                  ),
+                );
+              }
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _ArchiveTile(
@@ -958,7 +1089,15 @@ class PostDetailDialog extends StatelessWidget {
                     ? () {
                         final idx = allFiles.indexOf(f);
                         if (idx >= 0) {
-                          FullscreenImageViewerScreen.open(context, files: allFiles, index: idx, creatorId: creator.id, postId: post.id);
+                          FullscreenImageViewerScreen.open(
+                            context,
+                            files: allFiles,
+                            index: idx,
+                            service: post.service,
+                            creatorId: creator.id,
+                            postId: post.id,
+                            hasFull: post.hasFull,
+                          );
                         }
                       }
                     : null,
@@ -1223,7 +1362,6 @@ class ImageWrapTile extends StatelessWidget {
     required this.f,
     required this.creator,
     required this.post,
-    required this.isUnavailable,
     required this.allFiles,
     required this.idx,
   });
@@ -1231,26 +1369,25 @@ class ImageWrapTile extends StatelessWidget {
   final FileInfo f;
   final Creator creator;
   final Post post;
-  final bool isUnavailable;
   final List<FileInfo> allFiles;
   final int idx;
 
   @override
   Widget build(BuildContext context) {
-    final fullUrl = '${FileHelpers.fileDataBase}${f.path}?f=${f.name ?? p.basename(f.path!)}';
+    final fullUrl = f.downloadUrl(hasFull: post.hasFull);
     final thumbUrl = '${FileHelpers.imgThumbBase}${f.path}';
     final isTouch =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.fuchsia;
 
-    final fullSize = ImageMetaStore.instance.lookup(KemonoImageProvider.canonicalUrl(fullUrl))?.bytes;
+    final fullSize = fullUrl == null ? null : ImageMetaStore.instance.lookup(KemonoImageProvider.canonicalUrl(fullUrl))?.bytes;
     final thumbSize = ImageMetaStore.instance.lookup(thumbUrl)?.bytes;
     String? sizeOf(int? bytes) => bytes == null ? null : ImageMetaStore.formatBytes(bytes);
 
     return LeafContextMenu(
       entries: [
-        if (isTouch)
+        if (fullUrl != null && isTouch)
           ContextMenuAsyncAction(
             label: 'Copy image',
             icon: Icons.image,
@@ -1258,7 +1395,7 @@ class ImageWrapTile extends StatelessWidget {
             doneLabel: 'Image copied',
             task: (p) => _copyImageBytes(fullUrl, p),
           ),
-        if (!isTouch)
+        if (fullUrl != null && !isTouch)
           ContextMenuAsyncAction(
             label: 'Copy image file',
             icon: Icons.insert_drive_file,
@@ -1266,12 +1403,13 @@ class ImageWrapTile extends StatelessWidget {
             doneLabel: 'File copied',
             task: (_) => _copyFilePath(fullUrl),
           ),
-        ContextMenuAsyncAction(
-          label: 'Copy image URL',
-          icon: Icons.link,
-          doneLabel: 'URL copied',
-          task: (_) => Clipboard.setData(ClipboardData(text: fullUrl)),
-        ),
+        if (fullUrl != null)
+          ContextMenuAsyncAction(
+            label: 'Copy image URL',
+            icon: Icons.link,
+            doneLabel: 'URL copied',
+            task: (_) => Clipboard.setData(ClipboardData(text: fullUrl)),
+          ),
         const ContextMenuDivider(),
         if (isTouch)
           ContextMenuAsyncAction(
@@ -1321,9 +1459,15 @@ class ImageWrapTile extends StatelessWidget {
               ),
             ),
           ),
-          onTap: isUnavailable
-              ? null
-              : () => FullscreenImageViewerScreen.open(context, files: allFiles, index: idx, creatorId: creator.id, postId: post.id),
+          onTap: () => FullscreenImageViewerScreen.open(
+                context,
+                files: allFiles,
+                index: idx,
+                service: post.service,
+                creatorId: creator.id,
+                postId: post.id,
+                hasFull: post.hasFull,
+              ),
         ),
       ),
     );

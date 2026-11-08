@@ -382,7 +382,7 @@ packages:
       path: "../.shared/fox_utils"
       relative: true
     source: path
-    version: "0.1.7"
+    version: "0.1.9"
   fwfh_cached_network_image:
     dependency: transitive
     description:
@@ -661,7 +661,7 @@ packages:
       path: "../leaf_widgets"
       relative: true
     source: path
-    version: "0.0.1"
+    version: "0.2.1"
   leak_tracker:
     dependency: transitive
     description:
